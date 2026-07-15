@@ -155,7 +155,7 @@ public final class BiomeClassifier {
                 // Snow classification
                 float snowTemp = temp + snowNoise[idx];
                 boolean isSteep = slope > 0.78f;
-                boolean hasSnow = snowTemp < 0f && precip > 150f && !isSteep;
+                boolean hasSnow = (snowTemp < 0f || (temp < -6f && precip > 300f)) && precip > 150f && !isSteep;
 
                 // Elevation/temp bands
                 boolean isOcean   = elevVal < 0f;
@@ -170,13 +170,22 @@ public final class BiomeClassifier {
 
                 short biome = PLAINS;
 
+                boolean badlandsCandidate = !isOcean && !lowland && altM >= 200f && altM < 1800f
+                        && (warm || hot) && precip < 500f && treesNone;
+                boolean meadowCandidate = !isOcean && altM >= 600f && altM < 2500f
+                        && temp >= 5f && temp < 20f && precip >= 500f && precip < 2500f
+                        && !slopeMedium && !slopeBare && treeMoisture >= .35f && treeMoisture < 1.15f;
+
                 if (isOcean) {
                     if (frozen) biome = FROZEN_OCEAN;
                     else if (cold) biome = COLD_OCEAN;
                     else if (warm || hot) biome = WARM_OCEAN;
                     else biome = OCEAN;
                 } else if (mountains) {
-                    if (slopeBare) {
+                    // A lower-slope high-elevation fallback makes the registered peak
+                    // biomes reachable even when the learned terrain is broad rather
+                    // than cliff-like.
+                    if (slopeBare || (altM > 3500f && slope >= .35f)) {
                         biome = hasSnow ? FROZEN_PEAKS : STONY_PEAKS;
                     } else if (hasSnow) {
                         if (treesNone) biome = SNOWY_SLOPES;
@@ -197,6 +206,10 @@ public final class BiomeClassifier {
                         biome = SNOWY_PLAINS;
                     } else if (hasSnow) {
                         biome = (treesSparse || treesForest) ? SNOWY_TAIGA_SPARSE : SNOWY_TAIGA;
+                    } else if (meadowCandidate) {
+                        biome = MEADOW;
+                    } else if (badlandsCandidate) {
+                        biome = BADLANDS;
                     } else if (treesNone) {
                         if (warm || hot) biome = DESERT;
                         else if (barren && !lowland && (cold || cool || temperate)) biome = GROVE;
@@ -204,7 +217,7 @@ public final class BiomeClassifier {
                         else biome = PLAINS;
                     } else if (treesSparse || treesForest) {
                         if (hot) biome = JUNGLE;
-                        else if (warm && treesSparse && !slopeMedium) biome = SAVANNA;
+                        else if (warm && (treesSparse || (treesForest && treeMoisture < .65f)) && !slopeMedium) biome = SAVANNA;
                         else if (warm && treesForest) biome = FOREST_SPARSE;
                         else if (temperate) biome = FOREST_SPARSE;
                         else biome = TAIGA_SPARSE;
