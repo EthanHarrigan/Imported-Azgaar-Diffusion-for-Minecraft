@@ -12,6 +12,7 @@ public final class BiomeClassifier {
     private static final FastNoiseLite TEMP_NOISE, TEMP_NOISE_FINE;
     private static final FastNoiseLite PRECIP_NOISE;
     private static final FastNoiseLite SNOW_NOISE, SNOW_NOISE_FINE;
+    private static final FastNoiseLite MANGROVE_BORDER_NOISE;
 
     static {
         TEMP_NOISE = makeFnl(12345, 1f/500f, 3, 2f, 0.5f);
@@ -19,6 +20,7 @@ public final class BiomeClassifier {
         PRECIP_NOISE = makeFnl(12345, 1f/500f, 5, 2f, 0.5f);
         SNOW_NOISE = makeFnl(12345, 1f/500f, 3, 2f, 0.5f);
         SNOW_NOISE_FINE = makeFnl(54321, 1f/128f, 2, 2f, 0.5f);
+        MANGROVE_BORDER_NOISE = makeFnl(24681357, 1f/24f, 2, 2f, 0.5f);
     }
 
     private static FastNoiseLite makeFnl(int seed, float freq, int oct, float lac, float gain) {
@@ -33,7 +35,7 @@ public final class BiomeClassifier {
     }
 
     // Biome IDs
-    static final short PLAINS = 1, SNOWY_PLAINS = 3, DESERT = 5, SWAMP = 6;
+    static final short PLAINS = 1, SNOWY_PLAINS = 3, DESERT = 5, SWAMP = 6, MANGROVE_SWAMP = 7;
     static final short FOREST = 8, TAIGA = 15, SNOWY_TAIGA = 16, SAVANNA = 17;
     static final short WINDSWEPT_HILLS = 19, JUNGLE = 23, BADLANDS = 26, MEADOW = 29;
     static final short GROVE = 31, SNOWY_SLOPES = 32, FROZEN_PEAKS = 33, STONY_PEAKS = 35;
@@ -227,7 +229,44 @@ public final class BiomeClassifier {
                 out[idx] = biome;
             }
         }
+        // Apply this after the normal classification so it only changes a narrow,
+        // irregular border. It intentionally does not alter the terrain or climate
+        // model: mangrove is a single-player biome presentation rule.
+        applyMangroveBorder(out, i0, j0, H, W);
         return out;
+    }
+
+    /** Converts a deterministic, fuzzy subset of swamp cells beside forest into mangrove swamp. */
+    static void applyMangroveBorder(short[] biomes, int i0, int j0, int H, int W) {
+        if (biomes == null || biomes.length < H * W) return;
+        short[] original = biomes.clone();
+        for (int r = 0; r < H; r++) {
+            for (int c = 0; c < W; c++) {
+                int idx = r * W + c;
+                if (original[idx] != SWAMP) continue;
+                int forestDistance = nearestForestDistance(original, r, c, H, W, 2);
+                if (forestDistance < 0) continue;
+                float chance = forestDistance == 1 ? .68f : .32f;
+                float noise = .5f * (MANGROVE_BORDER_NOISE.GetNoise(j0 + c, i0 + r) + 1f);
+                if (noise < chance) biomes[idx] = MANGROVE_SWAMP;
+            }
+        }
+    }
+
+    private static int nearestForestDistance(short[] biomes, int r, int c, int H, int W, int radius) {
+        int best = Integer.MAX_VALUE;
+        for (int dr = -radius; dr <= radius; dr++) {
+            for (int dc = -radius; dc <= radius; dc++) {
+                if (dr == 0 && dc == 0) continue;
+                int distance = Math.max(Math.abs(dr), Math.abs(dc));
+                if (distance >= best) continue;
+                int rr = r + dr, cc = c + dc;
+                if (rr < 0 || rr >= H || cc < 0 || cc >= W) continue;
+                short neighbor = biomes[rr * W + cc];
+                if (neighbor == FOREST || neighbor == FOREST_SPARSE) best = distance;
+            }
+        }
+        return best == Integer.MAX_VALUE ? -1 : best;
     }
 
     private static float[] computeSlopeRatio(float[] elevPadded, int H, int W, float pixelSizeM) {
