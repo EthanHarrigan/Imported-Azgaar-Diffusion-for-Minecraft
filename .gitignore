@@ -1,0 +1,40 @@
+# User-specific stuff
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+bin/
+*.class
+*.log
+*.jar
+*.war
+*.zip
+*.tar.gz
+*.rar
+*.stackdump
+hs_err_pid*
+*~
+.DS_Store
+Thumbs.db
+
+# Gradle and generated runtime data
+.gradle/
+.gradle-user/
+build/
+run/
+runs/
+libs/
+!libs/
+!libs/onnxruntime-dml.jar
+ce-check/
+newest-compiled/
+gradle-app.setting
+.gradletasknamecache
+
+# Local IDE files
+.cursor/
+.vscode/
+.history/
+
+!gradle/wrapper/gradle-wrapper.jar
