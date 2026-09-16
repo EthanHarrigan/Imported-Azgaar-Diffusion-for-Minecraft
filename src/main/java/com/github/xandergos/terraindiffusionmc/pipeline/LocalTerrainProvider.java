@@ -3,11 +3,10 @@ package com.github.xandergos.terraindiffusionmc.pipeline;
 import com.github.xandergos.terraindiffusionmc.infinitetensor.FloatTensor;
 import com.github.xandergos.terraindiffusionmc.world.WorldScaleManager;
 import com.github.xandergos.terraindiffusionmc.blueprint.WorldBlueprintManager;
+import com.github.xandergos.terraindiffusionmc.hydrology.WorldHydrology;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.Comparator;
@@ -15,8 +14,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -48,14 +45,31 @@ public final class LocalTerrainProvider {
     public static final class HeightmapData {
         public final short[][] heightmap;
         public final short[][] biomeIds;
+        /** Preconverted once per tile; avoids conversion for every density sample. */
+        public final short[][] blockHeights;
+        public final com.github.xandergos.terraindiffusionmc.world.ColumnWorldContext[][] contexts;
+        /** Water surface in pipeline metres; Short.MIN_VALUE means no inland water. */
+        public final short[][] waterSurface;
         public final int width;
         public final int height;
 
         public HeightmapData(short[][] heightmap, short[][] biomeIds, int width, int height) {
+            this(heightmap,biomeIds,null,width,height);
+        }
+        public HeightmapData(short[][] heightmap, short[][] biomeIds, short[][] waterSurface,int width,int height){
+            this(heightmap,biomeIds,waterSurface,width,height,null);
+        }
+        public HeightmapData(short[][] heightmap, short[][] biomeIds, short[][] waterSurface,int width,int height,
+                com.github.xandergos.terraindiffusionmc.world.ColumnWorldContext[][] contexts){
+            this.contexts=contexts;
             this.heightmap = heightmap;
+            this.blockHeights = new short[height][width];
+            for(int z=0;z<height;z++)for(int x=0;x<width;x++)
+                blockHeights[z][x]=(short)com.github.xandergos.terraindiffusionmc.world.HeightConverter.convertToMinecraftHeight(heightmap[z][x]);
             this.biomeIds  = biomeIds;
             this.width     = width;
             this.height    = height;
+            this.waterSurface=waterSurface;
         }
     }
 
@@ -64,9 +78,11 @@ public final class LocalTerrainProvider {
 
     private static final int MAX_CACHE_SIZE = 64;
     private static final int MAX_CACHE_SIZE_HEADROOM = 8;
-    private static final Map<CacheKey, CacheEntry> CACHE = new ConcurrentHashMap<>();
+    private static final Map<RequestKey, CacheEntry> CACHE = new ConcurrentHashMap<>();
     private static final AtomicLong CACHE_CLOCK = new AtomicLong();
-    private static final Map<CacheKey, Future<HeightmapData>> PENDING = new ConcurrentHashMap<>();
+    private static final TerrainWorkQueue TERRAIN_WORK = new TerrainWorkQueue(2, 16);
+    // Provider identity also guards the fast cache-hit path against a world-switch race.
+    private record RequestKey(LocalTerrainProvider owner, CacheKey region) {}
     /** Single thread for pipeline.get() so MemoryTileStore is not accessed concurrently. */
     private static final ExecutorService INFERENCE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "terrain-diffusion-inference");
@@ -75,56 +91,70 @@ public final class LocalTerrainProvider {
     });
 
     private static volatile LocalTerrainProvider INSTANCE;
-    private static long instanceSeed;
-    private static String instanceBlueprint = "";
+    private static volatile long instanceSeed;
 
+    @FunctionalInterface interface NativeFieldReader {
+        float[][] read(int i1,int j1,int i2,int j2,boolean climate);
+    }
     private final WorldPipeline pipeline;
+    private final NativeFieldReader nativeReader;
+    private volatile WorldHydrology hydrology;
+    private boolean hydrologyPrepared;
+    private PreparationGate<WorldHydrology> preparation=new PreparationGate<>();
 
-    private static final Object INIT_LOCK = new Object();
+    private static volatile boolean worldReady;
+    public static synchronized void beginWorldLoad(){
+        worldReady=false;
+        TERRAIN_WORK.pauseAndDrain();
+        CACHE.clear();
+    }
 
     private LocalTerrainProvider(long seed, PipelineModels models) {
         ConditioningMapProvider provider = WorldBlueprintManager.provider(seed);
         this.pipeline = provider == null ? new WorldPipeline(seed, models) : new WorldPipeline(seed, models, provider);
+        this.nativeReader = this::readPipeline;
     }
 
-    /** Seed is 64-bit world seed. Creates provider once; later worlds only update seed and clear caches (lightweight). */
+    // Allows the CPU stage to be replayed against captured/synthetic model output without ONNX.
+    LocalTerrainProvider(WorldHydrology hydrology, NativeFieldReader reader) {
+        this.pipeline=null;
+        this.hydrology=hydrology;
+        this.nativeReader=reader;
+    }
+
+    /** Bind shared models to a fresh save-local provider after draining the previous world. */
     public static synchronized void init(long seed) {
+        worldReady=false;
+        TERRAIN_WORK.pauseAndDrain();
         PipelineModels.awaitLoad();
         PipelineModels models = PipelineModels.getInstance();
         if (models == null) throw new IllegalStateException("PipelineModels failed to load");
         String blueprint = WorldBlueprintManager.fingerprint();
-        if (INSTANCE == null || !blueprint.equals(instanceBlueprint)) {
-            if (INSTANCE != null) INSTANCE.pipeline.close();
-            INSTANCE = new LocalTerrainProvider(seed, models);
-            instanceSeed = seed;
-            instanceBlueprint = blueprint;
-        } else if (instanceSeed != seed) {
-            INSTANCE.pipeline.setSeed(seed);
-            instanceSeed = seed;
-            CACHE.clear();
-            PENDING.clear();
-        }
+        BiomeClassifier.configure(seed, blueprint);
+        // Always bind a fresh provider to the save-local store, even for the same seed/map.
+        // beginWorldLoad drains old readers before world-scoped globals are replaced.
+        if (INSTANCE != null) INSTANCE.pipeline.close();
+        INSTANCE = new LocalTerrainProvider(seed, models);
+        instanceSeed = seed;
+        CACHE.clear();
+        TERRAIN_WORK.resume();
+        worldReady=true;
+        LOG.info("Terrain world ready: seed={}, blueprint={}, scale={}",seed,blueprint,WorldScaleManager.getCurrentScale());
     }
 
-    public static LocalTerrainProvider getInstance() {
-        if (INSTANCE != null) return INSTANCE;
+    public static void restorePreparedPreview(){
+        if(INSTANCE!=null)WorldHydrology.publishPreview(INSTANCE.hydrology);
+    }
 
-        synchronized(INIT_LOCK) {
-            if (INSTANCE != null) return INSTANCE;
-            PipelineModels.awaitLoad();
-            PipelineModels models = PipelineModels.getInstance();
-            if (models == null) throw new IllegalStateException("PipelineModels failed to load");
-            INSTANCE = new LocalTerrainProvider(0L, models);
-            instanceSeed = 0L;
-            instanceBlueprint = WorldBlueprintManager.fingerprint();
-        }
-
+    public static synchronized LocalTerrainProvider getInstance() {
+        if(!worldReady||INSTANCE==null)throw new IllegalStateException("Terrain requested before world seed and blueprint initialization; refusing seed-zero fallback");
         return INSTANCE;
     }
 
-    public static void clearCache() {
+    public static synchronized void clearCache() {
+        TERRAIN_WORK.pauseAndDrain();
         CACHE.clear();
-        PENDING.clear();
+        if(worldReady) TERRAIN_WORK.resume();
     }
 
     // =========================================================================
@@ -135,6 +165,10 @@ public final class LocalTerrainProvider {
     public static long getSeed() {
         return instanceSeed;
     }
+    public static float regionalConcavity(int x,int z){
+        LocalTerrainProvider p=INSTANCE;if(p==null||p.hydrology==null)return Float.NaN;
+        int scale=WorldScaleManager.getCurrentScale();return p.hydrology.concavityAt(x/(double)scale,z/(double)scale);
+    }
 
     /**
      * Run elevation and climate inference on the inference thread.
@@ -142,7 +176,24 @@ public final class LocalTerrainProvider {
      * @return float[2]: [0] = elev (H*W), [1] = climate (5*H*W, or null)
      */
     public static float[][] getPipelineData(int i1, int j1, int i2, int j2, boolean withClimate) throws Exception {
-        return submitToInferenceThread(() -> getInstance().pipeline.get(i1, j1, i2, j2, withClimate));
+        var provider=getInstance();
+        return TERRAIN_WORK.awaitBackground(new Object(), () -> {
+            provider.requireActive();
+            float[][] out=provider.readPipeline(i1,j1,i2,j2,withClimate);
+            if(WorldBlueprintManager.generationVersion()>=3&&provider.hydrology!=null){
+                int nw=WorldBlueprintManager.activeStore().manifest().width()*256,nh=WorldBlueprintManager.activeStore().manifest().height()*256;
+                for(int z=0;z<i2-i1;z++)for(int x=0;x<j2-j1;x++){
+                    int p=z*(j2-j1)+x;
+                    float e=out[0][p];
+                    if(WorldBlueprintManager.generationVersion()>=12)e=WorldHydrology.enhanceMountainRelief(e,j1+x,i1+z,instanceSeed);
+                    out[0][p]=WorldHydrology.refineCoast(WorldHydrology.correctCoast(e,j1+x,i1+z,nw,nh),j1+x,i1+z,nw,nh);
+                }
+                var result=provider.hydrology.carve(out[0],i1,j1,i2-i1,j2-j1,1);
+                // Third channel is optional inland water; legacy callers still use [0]/[1].
+                return new float[][]{result.bed(),out[1],result.water()};
+            }
+            return out;
+        });
     }
 
     /**
@@ -152,22 +203,19 @@ public final class LocalTerrainProvider {
      * @return FloatTensor with shape [7, ci1-ci0, cj1-cj0]
      */
     public static FloatTensor getPipelineCoarse(int ci0, int cj0, int ci1, int cj1) throws Exception {
-        return submitToInferenceThread(() -> getInstance().pipeline.getCoarseSlice(ci0, cj0, ci1, cj1));
+        var provider=getInstance();
+        return TERRAIN_WORK.awaitBackground(new Object(), () -> {
+            provider.requireActive();
+            return submitToInferenceThread(() -> provider.pipeline.getCoarseSlice(ci0,cj0,ci1,cj1));
+        });
     }
 
     /**
-     * Change the world seed used by the pipeline and clear all caches.
-     * Note: this also affects terrain generation for new Minecraft chunks.
+     * Reject live-world seed changes; selecting the existing seed is a no-op.
      */
     public static void changeSeedFromExplorer(long newSeed) throws Exception {
-        submitToInferenceThread(() -> {
-            LocalTerrainProvider provider = getInstance();
-            provider.pipeline.setSeed(newSeed);
-            instanceSeed = newSeed;
-            CACHE.clear();
-            PENDING.clear();
-            return null;
-        });
+        if(newSeed!=instanceSeed)throw new IllegalStateException("Live-world seed changes are disabled to protect your save. Create a new world to preview a different seed.");
+        // An unchanged seed is a no-op. Do not clear work shared with chunk workers.
     }
 
     /** Change to a random new seed; returns the new seed value. */
@@ -188,8 +236,9 @@ public final class LocalTerrainProvider {
      * If the caller is the server or a chunk worker, the game will stall until this returns.
      */
     public HeightmapData fetchHeightmap(int i1, int j1, int i2, int j2) {
+        requireActive();
         CacheKey key = new CacheKey(i1, j1, i2, j2);
-        CacheEntry cached = CACHE.get(key);
+        CacheEntry cached = CACHE.get(new RequestKey(this,key));
         if (cached != null) {
             cached.lastAccessed.set(CACHE_CLOCK.incrementAndGet());
             return cached.data;
@@ -198,42 +247,59 @@ public final class LocalTerrainProvider {
         return this.genHeightmap(key, i1, j1, i2, j2);
     }
 
-    private HeightmapData genHeightmap(CacheKey key, int i1, int j1, int i2, int j2) {
-        int scale = WorldScaleManager.getCurrentScale();
-        FutureTask<HeightmapData> task = new FutureTask<>(() -> {
-            long computedWindowCountBefore = pipeline.getTotalComputedWindowCount();
-            HeightmapData data = scale <= 1
-                    ? handle1x(i1, j1, i2, j2)
-                    : handleUpsampled(i1, j1, i2, j2, scale);
-            long computedWindowCountAfter = pipeline.getTotalComputedWindowCount();
+    private void requireActive() {
+        if(!worldReady || INSTANCE!=this)
+            throw new java.util.concurrent.CancellationException("Terrain provider belongs to an inactive world");
+    }
 
-            long newlyComputedWindowCount = computedWindowCountAfter - computedWindowCountBefore;
-            int regionWidth = j2 - j1;
-            int regionHeight = i2 - i1;
-            LOG.info(
-                    "Terrain Diffusion ({}) finished generating region {}x{} ({} newly computed windows)",
-                    OnnxModel.getResolvedInferenceProvider(), regionWidth, regionHeight, newlyComputedWindowCount);
-            CACHE.put(key, new CacheEntry(data, new AtomicLong(CACHE_CLOCK.incrementAndGet())));
-            evictLruTo(MAX_CACHE_SIZE);
-            PENDING.remove(key);
-            return data;
-        });
-        Future<HeightmapData> existing = PENDING.putIfAbsent(key, task);
-        FutureTask<HeightmapData> toRun = (existing == null) ? task : (FutureTask<HeightmapData>) existing;
-        if (existing == null) {
-            int regionWidth = j2 - j1;
-            int regionHeight = i2 - i1;
-            LOG.info(
-                    "Terrain Diffusion ({}) uncached region requested: ({}, {})-({}, {}) size {}x{}",
-                    OnnxModel.getResolvedInferenceProvider(), j1, i1, j2, i2, regionWidth, regionHeight);
-            INFERENCE_EXECUTOR.submit(toRun);
-        }
+    /** Only this stage may touch the model or its mutable tensor cache. get() returns
+     * newly allocated arrays, whose ownership transfers to the requesting CPU worker. */
+    private float[][] readPipeline(int i1,int j1,int i2,int j2,boolean climate) {
         try {
-            return toRun.get();
-        } catch (Exception e) {
-            PENDING.remove(key);
-            throw new RuntimeException("Terrain tile failed: " + key, e);
+            return submitToInferenceThread(() -> {
+                if(WorldBlueprintManager.generationVersion()>=3&&!hydrologyPrepared){
+                    hydrology=preparation.get(()->WorldHydrology.prepare(pipeline,instanceSeed));
+                    hydrologyPrepared=true;
+                }
+                return pipeline.get(i1,j1,i2,j2,climate);
+            });
+        } catch(InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted terrain model request",e);
+        } catch(Exception e) {
+            throw new IllegalStateException("Terrain model request failed",e);
         }
+    }
+
+    private HeightmapData genHeightmap(CacheKey key, int i1, int j1, int i2, int j2) {
+        long requested=System.nanoTime();
+        try {
+            return TERRAIN_WORK.await(new RequestKey(this,key), () -> {
+                requireActive();
+                CacheEntry cached=CACHE.get(new RequestKey(this,key));
+                if(cached!=null){cached.lastAccessed.set(CACHE_CLOCK.incrementAndGet());return cached.data;}
+                long started=System.nanoTime();
+                int scale=WorldScaleManager.getCurrentScale();
+                HeightmapData data = prepareTile(i1,j1,i2,j2,scale);
+                CACHE.put(new RequestKey(this,key),new CacheEntry(data,new AtomicLong(CACHE_CLOCK.incrementAndGet())));
+                evictLruTo(MAX_CACHE_SIZE);
+                LOG.info("Terrain Diffusion ({}) finished generating region {}x{} at ({}, {}): queue {} ms, work {} ms",
+                        OnnxModel.getResolvedInferenceProvider(),j2-j1,i2-i1,j1,i1,
+                        (started-requested)/1_000_000,(System.nanoTime()-started)/1_000_000);
+                return data;
+            });
+        } catch(InterruptedException e) {
+            // This caller stops waiting. Other callers still share the original work.
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted waiting for terrain tile: "+key,e);
+        } catch(Exception e) {
+            throw new RuntimeException("Terrain tile failed: "+key,e);
+        }
+    }
+
+    HeightmapData prepareTile(int i1,int j1,int i2,int j2,int scale) {
+        return WorldBlueprintManager.generationVersion()>=3 ? handleModern(i1,j1,i2,j2,scale) : scale<=1
+                ? handle1x(i1,j1,i2,j2) : handleUpsampled(i1,j1,i2,j2,scale);
     }
 
     private static void evictLruTo(int maxSize) {
@@ -254,8 +320,8 @@ public final class LocalTerrainProvider {
     private HeightmapData handle1x(int i1, int j1, int i2, int j2) {
         int H = i2 - i1, W = j2 - j1;
 
-        float[] elevPadded = pipeline.get(i1 - 1, j1 - 1, i2 + 1, j2 + 1, false)[0];
-        float[][] out = pipeline.get(i1, j1, i2, j2, true);
+        float[] elevPadded = nativeReader.read(i1 - 1, j1 - 1, i2 + 1, j2 + 1, false)[0];
+        float[][] out = nativeReader.read(i1, j1, i2, j2, true);
         float[] elevFlat = out[0];
         float[] climate  = out[1];
 
@@ -282,7 +348,7 @@ public final class LocalTerrainProvider {
         int i2p = i2n + 2, j2p = j2n + 2;
         int nH = i2p - i1p, nW = j2p - j1p;
 
-        float[][] out = pipeline.get(i1p, j1p, i2p, j2p, true);
+        float[][] out = nativeReader.read(i1p, j1p, i2p, j2p, true);
         float[] elevNativeFlat    = out[0];
         float[] climateNativeFlat = out[1];
 
@@ -305,13 +371,90 @@ public final class LocalTerrainProvider {
 
         float[] elevOut = addElevationNoise(elevSmooth, elevPadded, i1, j1, H, W, pixelSizeM);
 
-        short[] biomeFlat = BiomeClassifier.classify(elevSmooth, climate, i1, j1, elevPadded, H, W, pixelSizeM);
+        // Land/ocean and immediate topology must follow the same final elevation field used
+        // by the density function. Broad ecology still comes from the smoothed climate/model.
+        short[] biomeFlat = BiomeClassifier.classify(elevOut, climate, i1, j1, elevPadded, H, W, pixelSizeM);
         return buildHeightmapData(elevOut, biomeFlat, H, W);
     }
 
     // =========================================================================
     // Helpers
     // =========================================================================
+
+    private HeightmapData handleModern(int i1,int j1,int i2,int j2,int scale){
+        if(WorldBlueprintManager.generationVersion()<13)return handleModernRaw(i1,j1,i2,j2,scale);
+        int halo=com.github.xandergos.terraindiffusionmc.world.BiomeBoundaryField.HALO;
+        var raw=handleModernRaw(i1-halo,j1-halo,i2+halo,j2+halo,scale);
+        var boundaries=new com.github.xandergos.terraindiffusionmc.world.BiomeBoundaryField(raw.biomeIds,raw.waterSurface);
+        int h=i2-i1,w=j2-j1;short[][] heights=new short[h][w],ids=new short[h][w],waters=new short[h][w];
+        var contexts=new com.github.xandergos.terraindiffusionmc.world.ColumnWorldContext[h][w];
+        for(int z=0;z<h;z++)for(int x=0;x<w;x++){
+            int r=z+halo,c=x+halo,wx=j1+x,wz=i1+z;short id=raw.biomeIds[r][c];
+            float e=raw.heightmap[r][c];short water=raw.waterSurface[r][c];
+            var f=com.github.xandergos.terraindiffusionmc.hydrology.DesertTerrain.at(wx/(double)scale,wz/(double)scale,instanceSeed);
+            double slope=Math.hypot(raw.heightmap[r][c+1]-raw.heightmap[r][c-1],raw.heightmap[r+1][c]-raw.heightmap[r-1][c])/(60.0/scale);
+            var completed=com.github.xandergos.terraindiffusionmc.world.DesertLandforms.complete(e,wx,wz,id,water!=Short.MIN_VALUE,
+                    boundaries.distance(c,r),boundaries.waterDistance(c,r),f,instanceSeed,scale);
+            heights[z][x]=completed.metres();ids[z][x]=id;waters[z][x]=water;
+            contexts[z][x]=new com.github.xandergos.terraindiffusionmc.world.ColumnWorldContext(wx,wz,id,boundaries.neighbor(c,r),
+                    completed.baseY(),completed.topY(),water,boundaries.distance(c,r),boundaries.width(c,r),boundaries.transition(c,r),
+                    boundaries.waterDistance(c,r),slope,f,completed.land());
+        }
+        return new HeightmapData(heights,ids,waters,w,h,contexts);
+    }
+
+    private HeightmapData handleModernRaw(int i1,int j1,int i2,int j2,int scale){
+        int h=i2-i1,w=j2-j1,ph=h+2,pw=w+2;
+        int ni=Math.floorDiv(i1-3,scale)-2,nj=Math.floorDiv(j1-3,scale)-2;
+        int endI=-Math.floorDiv(-(i2+3),scale)+2,endJ=-Math.floorDiv(-(j2+3),scale)+2;
+        int nh=endI-ni,nw=endJ-nj;float[][] field=nativeReader.read(ni,nj,endI,endJ,true);
+        int mapW=WorldBlueprintManager.activeStore().manifest().width()*256;
+        int mapH=WorldBlueprintManager.activeStore().manifest().height()*256;
+        for(int r=0;r<nh;r++)for(int c=0;c<nw;c++){
+            float e=field[0][r*nw+c],originalElevation=e;
+            if(WorldBlueprintManager.generationVersion()>=4)e=WorldHydrology.enhanceMountainRelief(e,nj+c,ni+r,instanceSeed);
+            field[0][r*nw+c]=WorldHydrology.refineCoast(WorldHydrology.correctCoast(e,nj+c,ni+r,mapW,mapH),nj+c,ni+r,mapW,mapH);
+            if(WorldBlueprintManager.generationVersion()>=9){
+                // Pipeline climate precedes our terrain edits. Keep alpine bands tied to final height.
+                field[1][r*nw+c]-=.0065f*(Math.max(0,field[0][r*nw+c])-Math.max(0,originalElevation));
+            }
+        }
+        // Absolute-coordinate interpolation (not resize-dependent centre offsets).
+        float[] smooth=sampleNative(field[0],nh,nw,ni,nj,i1-2,j1-2,h+4,w+4,scale,1);
+        float[] inner=new float[ph*pw];
+        for(int r=0;r<ph;r++)System.arraycopy(smooth,(r+1)*(w+4)+1,inner,r*pw,pw);
+        float[] noisy=addElevationNoise(inner,smooth,i1-1,j1-1,ph,pw,NATIVE_RESOLUTION/scale);
+        var carved=hydrology.carve(noisy,i1-1,j1-1,ph,pw,scale);
+        float[] elev=new float[h*w],water=new float[h*w];
+        for(int r=0;r<h;r++){System.arraycopy(carved.bed(),(r+1)*pw+1,elev,r*w,w);System.arraycopy(carved.water(),(r+1)*pw+1,water,r*w,w);}
+        float[] climate=sampleNative(field[1],nh,nw,ni,nj,i1,j1,h,w,scale,4);
+        if(WorldBlueprintManager.generationVersion()>=9)
+            for(int r=0;r<h;r++)for(int c=0;c<w;c++)
+                climate[r*w+c]-=.0065f*(Math.max(0,elev[r*w+c])-Math.max(0,inner[(r+1)*pw+c+1]));
+        short[] biomes=BiomeClassifier.classify(elev,climate,i1,j1,carved.bed(),h,w,NATIVE_RESOLUTION/scale);
+        short[][] waters=new short[h][w];
+        for(int r=0;r<h;r++)for(int c=0;c<w;c++){
+            int p=r*w+c;waters[r][c]=Short.MIN_VALUE;
+            if(Float.isFinite(water[p])&&water[p]>0){
+                waters[r][c]=(short)Math.max(0,Math.min(32767,Math.floor(water[p])));
+                biomes[p]=climate[p]<0?BiomeIds.FROZEN_RIVER:BiomeIds.RIVER;
+            }
+        }
+        return buildHeightmapData(elev,biomes,waters,h,w);
+    }
+
+    private static float[] sampleNative(float[] field,int nh,int nw,int ni,int nj,int z0,int x0,int h,int w,int scale,int channels){
+        float[] out=new float[h*w*channels];
+        for(int r=0;r<h;r++)for(int c=0;c<w;c++){
+            double x=(x0+c)/(double)scale-nj,z=(z0+r)/(double)scale-ni;
+            int ix=(int)Math.floor(x),iz=(int)Math.floor(z);double fx=x-ix,fz=z-iz;
+            for(int ch=0;ch<channels;ch++){
+                int p=ch*nh*nw+iz*nw+ix;
+                out[ch*h*w+r*w+c]=(float)((field[p]*(1-fx)+field[p+1]*fx)*(1-fz)+(field[p+nw]*(1-fx)+field[p+nw+1]*fx)*fz);
+            }
+        }
+        return out;
+    }
 
     private float[] addElevationNoise(float[] elevSmooth, float[] elevPadded,
                                        int i1, int j1, int H, int W, float pixelSizeM) {
@@ -393,6 +536,10 @@ public final class LocalTerrainProvider {
     }
 
     private static HeightmapData buildHeightmapData(float[] elevFlat, short[] biomeFlat, int H, int W) {
+        return buildHeightmapData(elevFlat,biomeFlat,null,H,W);
+    }
+
+    private static HeightmapData buildHeightmapData(float[] elevFlat, short[] biomeFlat, short[][] water, int H, int W) {
         short[][] heightmap = new short[H][W];
         short[][] biomeIds  = new short[H][W];
         for (int r = 0; r < H; r++)
@@ -401,6 +548,6 @@ public final class LocalTerrainProvider {
                 heightmap[r][c] = (short) Math.max(-32768, Math.min(32767, (int) Math.floor(e)));
                 biomeIds[r][c]  = biomeFlat[r * W + c];
             }
-        return new HeightmapData(heightmap, biomeIds, W, H);
+        return new HeightmapData(heightmap, biomeIds, water, W, H);
     }
 }

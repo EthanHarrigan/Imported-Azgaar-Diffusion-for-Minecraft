@@ -82,31 +82,31 @@ public final class BlueprintConditioningProvider implements ConditioningMapProvi
         return x * x * (3 - 2 * x);
     }
 
-    private static void polar(float[][][] o, int r, int c) {
+    private void polar(float[][][] o, int r, int c) {
         o[0][r][c] = (float) -Math.sqrt(4000);
         o[1][r][c] = -18;
-        o[2][r][c] = 22;
+        o[2][r][c] = store.manifest().climateAlgorithmVersion()>=4 ? 2200 : 22;
         o[3][r][c] = 220;
         o[4][r][c] = 35;
     }
 
-    private static void warmSouthBoundary(float[][][] o, int r, int c,
+    private void warmSouthBoundary(float[][][] o, int r, int c,
                                           double southLat, float rainMultiplier) {
         double lat = PlanetaryClimate.effectiveLatitude(-90, southLat);
         double sl = Math.abs(Math.sin(Math.toRadians(lat)));
         o[0][r][c] = (float) -Math.sqrt(4000);
         o[1][r][c] = (float) (27 - 42 * sl * sl);
-        o[2][r][c] = (float) (3 + 18 * sl);
+        o[2][r][c] = (float) (3 + 18 * sl) * (store.manifest().climateAlgorithmVersion()>=4 ? 100 : 1);
         o[3][r][c] = Math.min(4500, 900 * rainMultiplier);
         o[4][r][c] = (float) (22 + 45 * sl);
     }
 
-    private static void applyLatitudeClimate(float[][][] o, int r, int c, double baseLat,
+    private void applyLatitudeClimate(float[][][] o, int r, int c, double baseLat,
                                               double southLat, float rainMultiplier) {
         double lat = PlanetaryClimate.effectiveLatitude(baseLat, southLat);
         double s = Math.abs(Math.sin(Math.toRadians(Math.max(-90, Math.min(90, lat)))));
         o[1][r][c] = (float) (o[1][r][c] * .35 + (27 - 42 * s * s) * .65);
-        o[2][r][c] = (float) (o[2][r][c] * .4 + (3 + 18 * s) * .6);
+        o[2][r][c] = (float) (o[2][r][c] * .4 + (3 + 18 * s) * .6 * (store.manifest().climateAlgorithmVersion()>=4 ? 100 : 1));
         if (southLat > -89.999 && baseLat < southLat)
             o[3][r][c] = Math.min(4500, o[3][r][c] * rainMultiplier);
     }

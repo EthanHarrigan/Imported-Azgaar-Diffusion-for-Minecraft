@@ -4,7 +4,9 @@
   "package": "com.github.xandergos.terraindiffusionmc.mixin.client",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "CreateWorldScreenWorldTabMixin"
+    "CreateWorldScreenWorldTabMixin",
+    "HydrologyProgressMixin",
+    "LoweredSkyMixin"
   ],
   "injectors": {
     "defaultRequire": 1

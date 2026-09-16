@@ -49,6 +49,7 @@ public final class WorldScaleSettingsScreen extends Screen {
     private ButtonWidget doneButton;
     private CompiledBlueprint warningReadyBlueprint;
     private Integer warningReadyScale;
+    private int settingsRevision;
 
     public WorldScaleSettingsScreen(Screen parentScreen) {
         super(Text.translatable("terrain-diffusion-mc.world_settings.title"));
@@ -76,12 +77,12 @@ public final class WorldScaleSettingsScreen extends Screen {
                 55, TEXT_FIELD_HEIGHT,
                 LABEL_TEXT);
         scaleTextField.setText(String.valueOf(WorldScaleSelectionState.getPendingScaleOrDefault()));
-        scaleTextField.setChangedListener(value -> validationTextWidget.setMessage(Text.empty()));
+        scaleTextField.setChangedListener(value -> updatePreview());
         this.addDrawableChild(scaleTextField);
-        widthTextField=field(centerX-130,centerY+52,100,"Physical width","40075");
-        elevationTextField=field(centerX-20,centerY+52,90,"Elevation noise","0.5");
+        widthTextField=field(centerX-130,centerY+52,100,"Physical width","750");
+        elevationTextField=field(centerX-20,centerY+52,90,"Elevation noise","0.35");
         climateTextField=field(centerX+80,centerY+52,90,"Climate noise","0.2");
-        blendTextField=field(centerX+180,centerY+52,80,"Blend km","250");
+        blendTextField=field(centerX+180,centerY+52,80,"Blend km","10");
         addCenteredTextWidget(Text.literal("South climate latitude (−90 disables)       South rain multiplier"),centerX,centerY+78,0xFFFFFF);
         southLatitudeTextField=field(centerX-130,centerY+90,120,"South climate latitude","-20");
         southRainTextField=field(centerX+20,centerY+90,120,"South rain x","2.0");
@@ -96,11 +97,24 @@ public final class WorldScaleSettingsScreen extends Screen {
 
         validationTextWidget = new TextWidget(0, centerY + 152, this.width, 24, Text.empty(), this.textRenderer);
         this.addDrawableChild(validationTextWidget);
+        addCenteredTextWidget(Text.literal("Azgaar worlds: first river preparation can take an hour or more."),centerX,centerY+183,0xE0BC70);
+        updatePreview();
     }
 
     private TextFieldWidget field(int x,int y,int w,String label,String value){TextFieldWidget f=new TextFieldWidget(textRenderer,x,y,w,20,Text.literal(label));f.setText(value);f.setChangedListener(v->updatePreview());addDrawableChild(f);return f;}
     private void browse(){try(MemoryStack stack=MemoryStack.stackPush()){PointerBuffer filters=stack.mallocPointer(1);filters.put(stack.UTF8("*.json")).flip();String selected=TinyFileDialogs.tinyfd_openFileDialog("Select Azgaar Full JSON",null,filters,"JSON files",false);if(selected!=null)jsonTextField.setText(selected);}}
-    private void updatePreview(){if(validationTextWidget==null)return;try{double km=Double.parseDouble(widthTextField.getText());int scale=Integer.parseInt(scaleTextField.getText());long coarse=Math.round(km/7.68);long blocks=coarse*256L*scale;validationTextWidget.setMessage(Text.literal(String.format(java.util.Locale.ROOT,"Map: %,d × %,d coarse pixels; approximately %,d × %,d Minecraft blocks",coarse,coarse/2,blocks,blocks/2)).formatted(Formatting.GRAY));}catch(Exception ignored){validationTextWidget.setMessage(Text.empty());}}
+    private void updatePreview(){
+        settingsRevision++;
+        warningReadyBlueprint=null;warningReadyScale=null;
+        if(doneButton!=null)doneButton.setMessage(Text.literal("Compile & Done"));
+        if(validationTextWidget==null)return;
+        try{
+            double km=Double.parseDouble(widthTextField.getText());int scale=Integer.parseInt(scaleTextField.getText());
+            long coarse=Math.max(16,Math.round(km/7.68)),rows=Math.max(8,coarse/2);
+            validationTextWidget.setMessage(Text.literal(String.format(java.util.Locale.ROOT,"Map: %,d × %,d coarse pixels; approximately %,d × %,d Minecraft blocks",coarse,rows,coarse*256L*scale,rows*256L*scale)).formatted(Formatting.GRAY));
+        }catch(Exception ignored){validationTextWidget.setMessage(Text.empty());}
+        if(jsonTextField!=null&&!jsonTextField.getText().isBlank())jsonTextField.setTooltip(net.minecraft.client.gui.tooltip.Tooltip.of(Text.literal(jsonTextField.getText())));
+    }
 
     /**
      * Adds a centered TextWidget at the given screen-center x and y position.
@@ -114,6 +128,7 @@ public final class WorldScaleSettingsScreen extends Screen {
 
     @Override
     public void close() {
+        settingsRevision++;
         if (this.client != null) {
             this.client.setScreen(parentScreen);
         }
@@ -148,7 +163,24 @@ public final class WorldScaleSettingsScreen extends Screen {
                     Double.parseDouble(southLatitudeTextField.getText().trim()),
                     Float.parseFloat(southRainTextField.getText().trim()));
             doneButton.active=false;validationTextWidget.setMessage(Text.literal("Validating and compiling blueprint…").formatted(Formatting.YELLOW));
-            Thread.startVirtualThread(()->{try{Path temp=Files.createTempDirectory("terrain-diffusion-blueprint-");CompiledBlueprint compiled=AzgaarBlueprintCompiler.compile(Path.of(source),temp,options);this.client.execute(()->{if(compiled.warnings().isEmpty()){finishSelection(compiled,selectedScale);}else{warningReadyBlueprint=compiled;warningReadyScale=selectedScale;doneButton.active=true;doneButton.setMessage(Text.literal("Accept & Done"));validationTextWidget.setMessage(Text.literal("Warning: "+compiled.warnings().getFirst()).formatted(Formatting.YELLOW));}});}catch(Exception e){this.client.execute(()->{doneButton.active=true;validationTextWidget.setMessage(Text.literal("Import failed: "+e.getMessage()).formatted(Formatting.RED));});}});
+            int requestedRevision=settingsRevision;
+            Thread.startVirtualThread(()->{
+                try{
+                    Path temp=Files.createTempDirectory("terrain-diffusion-blueprint-");
+                    CompiledBlueprint compiled=AzgaarBlueprintCompiler.compile(Path.of(source),temp,options);
+                    this.client.execute(()->{
+                        if(this.client.currentScreen!=this)return;
+                        doneButton.active=true;
+                        if(requestedRevision!=settingsRevision){validationTextWidget.setMessage(Text.literal("Settings changed while compiling; please compile again.").formatted(Formatting.YELLOW));return;}
+                        if(compiled.warnings().isEmpty())finishSelection(compiled,selectedScale);
+                        else{
+                            warningReadyBlueprint=compiled;warningReadyScale=selectedScale;
+                            doneButton.setMessage(Text.literal("Accept & Done"));
+                            validationTextWidget.setMessage(Text.literal("Warning: "+compiled.warnings().getFirst()).formatted(Formatting.YELLOW));
+                        }
+                    });
+                }catch(Exception e){this.client.execute(()->{if(this.client.currentScreen==this){doneButton.active=true;validationTextWidget.setMessage(Text.literal("Import failed: "+e.getMessage()).formatted(Formatting.RED));}});}
+            });
         } catch (NumberFormatException exception) {
             validationTextWidget.setMessage(Text.literal("All numeric settings must contain valid numbers.").formatted(Formatting.RED));
         } catch (IllegalArgumentException exception) {
@@ -156,7 +188,7 @@ public final class WorldScaleSettingsScreen extends Screen {
         }
     }
 
-    private void finishSelection(CompiledBlueprint compiled,int selectedScale){BlueprintSelectionState.set(compiled);applyWorldHeightForScale(selectedScale);WorldScaleSelectionState.setPendingScale(selectedScale);close();}
+    private void finishSelection(CompiledBlueprint compiled,int selectedScale){BlueprintSelectionState.set(compiled);applyWorldHeightForScale(compiled.manifest().effectiveExceptionalSummits().isEmpty()?selectedScale:6);WorldScaleSelectionState.setPendingScale(selectedScale);close();}
 
     /**
      * Applies a pre-registered dimension type variant for the chosen scale.

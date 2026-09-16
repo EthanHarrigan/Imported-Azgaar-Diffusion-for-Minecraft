@@ -40,6 +40,15 @@ final class BiomeClassifierTest {
         assertEquals(BiomeClassifier.STONY_PEAKS, classifyPeak(10));
     }
 
+    @Test void oceanTemperatureAndDepthBandsAreDistinct() {
+        assertEquals(BiomeClassifier.WARM_OCEAN,classifyFlat(-100,27,900));
+        assertEquals(BiomeClassifier.LUKEWARM_OCEAN,classifyFlat(-100,20,900));
+        assertEquals(BiomeClassifier.DEEP_LUKEWARM_OCEAN,classifyFlat(-1400,20,900));
+        assertEquals(BiomeClassifier.DEEP_OCEAN,classifyFlat(-1400,11,900));
+        assertEquals(BiomeClassifier.DEEP_COLD_OCEAN,classifyFlat(-1400,2,900));
+        assertEquals(BiomeClassifier.DEEP_FROZEN_OCEAN,classifyFlat(-1400,-10,900));
+    }
+
     private static short classifyFlat(float elevation, float temp, float precipitation) {
         return classifyFlat(elevation, temp, precipitation, 10);
     }

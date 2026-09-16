@@ -53,7 +53,8 @@ public final class PlanetaryClimate {
                 float cont = Math.min(1, dist[i] / Math.max(1f, w / 16f));
                 float noise = (float) (Math.sin(x * .071 + phase) + Math.sin(y * .113 - phase)) * .8f;
                 out[0][i] = (float) (27 - 42 * sl * sl) - Math.max(0, elev[i]) * .0065f + noise;
-                out[1][i] = (float) (3 + 18 * sl + 8 * cont);
+                // BIO4 is standard deviation in degrees C multiplied by 100.
+                out[1][i] = (float) (3 + 18 * sl + 8 * cont) * 100;
             }
         }
 
@@ -84,7 +85,8 @@ public final class PlanetaryClimate {
                     float incoming = moist[u] * .985f;
                     float uplift = Math.max(0, elev[i] - elev[u]) / 1400f;
                     float fall = Math.min(incoming, .008f + uplift * .22f);
-                    rain[i] += fall;
+                    // Discard the transient spin-up; normalize the steady-state flux below.
+                    if (step >= 48) rain[i] += fall;
                     next[i] = Math.max(0, incoming - fall);
                 }
             }
@@ -95,10 +97,12 @@ public final class PlanetaryClimate {
             double baseLat = rowLatitude(y, h);
             double lat = effectiveLatitude(baseLat, south);
             double sl = Math.abs(Math.sin(Math.toRadians(lat)));
-            float localRainMultiplier = south > -89.999 && baseLat < south ? rainMultiplier : 1f;
+            double t = south > -89.999 ? Math.max(0, Math.min(1, (south-baseLat)/(south+90))) : 0;
+            float localRainMultiplier = (float)(1+(rainMultiplier-1)*t*t*(3-2*t));
             for (int x = 0; x < w; x++) {
                 int i = y * w + x;
-                float p = elev[i] < 0 ? 900 : (80 + rain[i] * 1800 + moist[i] * 420);
+                float flux = rain[i] / 48;
+                float p = elev[i] < 0 ? 900 : (60 + 2700 * (1-(float)Math.exp(-flux*12)) + moist[i] * 650);
                 out[2][i] = Math.max(30, Math.min(4500, p * localRainMultiplier));
                 out[3][i] = (float) Math.max(10, Math.min(100, 22 + 45 * sl
                         + 20 * Math.min(1, dist[i] / Math.max(1f, w / 16f))));

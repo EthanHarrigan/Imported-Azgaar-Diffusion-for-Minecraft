@@ -453,6 +453,28 @@ public final class WorldPipeline implements AutoCloseable {
         return tileStore.getTotalComputedWindowCount();
     }
 
+    /** Precompute a bounded region by stage, without assembling a dense output.
+     * Callers retain their original query bounds, so reconstruction and routing stay identical. */
+    public void prepareElevationRegion(int i1,int j1,int i2,int j2) {
+        prepareElevationRegions(List.of(new int[]{i1,j1,i2,j2}));
+    }
+    public void prepareElevationRegions(List<int[]> regions) {
+        if(regions.isEmpty())return;
+        List<int[][]> ranges=new ArrayList<>();
+        int lc=LATENT_COMPRESSION,pad=6*lc;
+        int minI=Integer.MAX_VALUE,minJ=Integer.MAX_VALUE,maxI=Integer.MIN_VALUE,maxJ=Integer.MIN_VALUE;
+        for(int[] region:regions){
+            if(region.length!=4||region[2]<=region[0]||region[3]<=region[1])throw new IllegalArgumentException("Invalid elevation prefetch rectangle");
+            int i1=region[0],j1=region[1],i2=region[2],j2=region[3];
+            minI=Math.min(minI,i1);minJ=Math.min(minJ,j1);maxI=Math.max(maxI,i2);maxJ=Math.max(maxJ,j2);
+            int a=Math.floorDiv(i1-pad,lc)*lc,b=Math.floorDiv(j1-pad,lc)*lc;
+            int c=-Math.floorDiv(-(i2+pad),lc)*lc,d=-Math.floorDiv(-(j2+pad),lc)*lc;
+            ranges.add(new int[][]{{0,2},{a,c},{b,d}});
+        }
+        if((long)maxI-minI>1024||(long)maxJ-minJ>1024)throw new IllegalArgumentException("Prefetch must fit within 1024 x 1024 native pixels");
+        residual.ensureComputedRanges(ranges);
+    }
+
     /**
      * Returns a coarse tensor slice with shape [7, ci1-ci0, cj1-cj0].
      * Coordinates are in coarse index units (1 unit = 256 native pixels).

@@ -40,17 +40,10 @@ public class TerrainDiffusionMc implements ModInitializer {
         ModelAssetManager.ensureAssetsReady();
         PipelineModels.load();
 
-        ServerLifecycleEvents.SERVER_STARTING.register(server -> LocalTerrainProvider.clearCache());
-
-        ServerWorldEvents.LOAD.register((server, world) -> {
-            if (world.getRegistryKey() == World.OVERWORLD) {
-                WorldScaleManager.initializeForWorld(world);
-                WorldBlueprintManager.initializeForWorld(world);
-                LocalTerrainProvider.init(world.getSeed());
-            }
-        });
+        ServerLifecycleEvents.SERVER_STARTING.register(server -> LocalTerrainProvider.beginWorldLoad());
 
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> ExplorerServer.stop());
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> LocalTerrainProvider.beginWorldLoad());
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
                 dispatcher.register(literal("td-explore").executes(TerrainDiffusionMc::executeExplore));

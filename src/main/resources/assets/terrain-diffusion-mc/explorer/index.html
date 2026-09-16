@@ -363,6 +363,18 @@
   }
   input[type="number"]:focus, input[type="text"]:focus { border-color: var(--accent); }
 
+  select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 4px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  select:focus { border-color: var(--accent); outline: none; }
+
   button {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -498,6 +510,33 @@
   }
   .coord-tp:hover { border-color: var(--accent); }
   .coord-tp-copied { border-color: #22c55e !important; color: #22c55e; }
+
+  .biome-layer-btn { width: 100%; }
+  .biome-note { color: var(--muted); font-size: 10px; line-height: 1.45; }
+  .biome-legend {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 3px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 3px;
+  }
+  .biome-entry {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    color: var(--text);
+    font-size: 11px;
+  }
+  .biome-swatch {
+    width: 13px;
+    height: 13px;
+    border: 1px solid rgba(255,255,255,.35);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .biome-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -523,6 +562,13 @@
     <div class="section">
       <div class="section-title">Coarse Channel</div>
       <div class="channel-grid" id="channel-buttons"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Biome Layer</div>
+      <button id="btn-biomes" class="biome-layer-btn">Show Biomes</button>
+      <div class="biome-note" id="biome-resolution-note">Biome colors use the same classifier as world generation. Maximum Minecraft biome resolution is 4 blocks.</div>
+      <div class="biome-legend" id="biome-legend"></div>
     </div>
 
     <!-- Filter -->
@@ -561,6 +607,11 @@
         <span class="panel-title">Coarse Map</span>
         <button id="coarse-zoom-in">Zoom In</button>
         <button id="coarse-zoom-out">Zoom Out</button>
+        <select id="coarse-resolution" title="Overview sampling resolution">
+          <option value="1">Fine</option>
+          <option value="2" selected>Fast</option>
+          <option value="4">Very Fast</option>
+        </select>
         <span class="coord-scale-lbl" id="coarse-zoom-label">100x100</span>
         <span class="panel-info" id="coarse-info">click a tile to load detail</span>
       </div>
@@ -582,9 +633,13 @@
     <div class="map-panel">
       <div class="panel-header">
         <span class="panel-title">Detail Map</span>
+        <button id="detail-zoom-in">Zoom In</button>
+        <button id="detail-zoom-out">Zoom Out</button>
+        <span class="coord-scale-lbl" id="detail-zoom-label">512x512</span>
         <button class="active" id="mode-relief">Relief</button>
         <button id="mode-elevation">Elevation</button>
         <button id="mode-temperature">Temperature</button>
+        <button id="mode-biomes">Biomes</button>
         <span class="panel-info" id="detail-info">click coarse map to load</span>
       </div>
       <div class="nav-grid">
@@ -610,8 +665,8 @@
   const COARSE_PAN_STEP = 20;
   const COARSE_WINDOW_MIN = 8;
   const COARSE_WINDOW_MAX = 120;
-  const DETAIL_PAN_STEP = 256;
-  const DETAIL_SIZE = 1024;
+  const DETAIL_SIZE_MIN = 256;
+  const DETAIL_SIZE_MAX = 1024;
 
   const CHANNEL_META = [
     { ch: 0, name: 'Elev',    unit: 'm',  step: 50,   defMin: -8000, defMax: 8000 },
@@ -632,14 +687,21 @@
     mapHeightBlocks: 0,
     coarseOffsetI: 0,
     coarseOffsetJ: 0,
-    coarseWindow: 50,
+    coarseWindow: 40,
+    coarseStep: 2,
     coarseData: null,
     detailRaw: null,
     detailCI: null,
     detailCJ: null,
     detailPanI: 0,
     detailPanJ: 0,
+    detailSize: 512,
+    detailRawLoading: false,
+    detailRawPromise: null,
     detailMode: 'relief',
+    mapMode: 'channel',
+    biomeData: null,
+    biomeMeta: new Map(),
   };
 
   // ── DOM refs ──
@@ -648,6 +710,9 @@
   const btnSetSeed      = document.getElementById('btn-set-seed');
   const btnNewSeed      = document.getElementById('btn-new-seed');
   const channelButtons  = document.getElementById('channel-buttons');
+  const btnBiomes       = document.getElementById('btn-biomes');
+  const biomeLegend     = document.getElementById('biome-legend');
+  const biomeResolutionNote = document.getElementById('biome-resolution-note');
   const filterEnable    = document.getElementById('filter-enable');
   const filterChannels  = document.getElementById('filter-channels');
   const btnStats        = document.getElementById('btn-stats');
@@ -657,17 +722,33 @@
   const coarsePlaceholder = document.getElementById('coarse-placeholder');
   const coarseInfo      = document.getElementById('coarse-info');
   const coarseZoomLabel = document.getElementById('coarse-zoom-label');
+  const coarseResolution = document.getElementById('coarse-resolution');
   const tileMarker      = document.getElementById('tile-marker');
+  const detailContainer = document.getElementById('detail-container');
   const detailImg       = document.getElementById('detail-img');
   const detailSpinner   = document.getElementById('detail-spinner');
   const detailPlaceholder = document.getElementById('detail-placeholder');
   const detailInfo      = document.getElementById('detail-info');
+  const detailZoomLabel = document.getElementById('detail-zoom-label');
   const statusBar       = document.getElementById('status-bar');
   const tooltip         = document.getElementById('hover-tooltip');
   const coordRows       = document.getElementById('coord-rows');
   const coordScaleFill  = document.getElementById('coord-scale-fill');
   const coordScaleLbl   = document.getElementById('coord-scale-lbl');
   const coordBlockSize  = document.getElementById('coord-block-size');
+
+  function buildBiomeLegend(entries) {
+    biomeLegend.innerHTML = '';
+    state.biomeMeta = new Map();
+    (entries || []).forEach(entry => {
+      state.biomeMeta.set(String(entry.id), entry);
+      const row = document.createElement('div');
+      row.className = 'biome-entry';
+      row.innerHTML = `<span class="biome-swatch" style="background:${entry.color}"></span><span class="biome-name">${entry.name}</span>`;
+      row.title = `${entry.name} (${entry.key})`;
+      biomeLegend.appendChild(row);
+    });
+  }
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
@@ -748,7 +829,7 @@
     const scale = state.coordScale;
     const mPerBlock = res / scale;
     coordBlockSize.textContent = `1 block = ${mPerBlock % 1 === 0 ? mPerBlock : mPerBlock.toFixed(2)} m`;
-    const totalKm = DETAIL_SIZE * res / 1000;
+    const totalKm = state.detailSize * res / 1000;
     const barKm = niceScaleKm(totalKm * 0.25);
     coordScaleFill.style.width = (barKm / totalKm * 100).toFixed(1) + '%';
     coordScaleLbl.textContent = barKm >= 1 ? `${barKm} km` : `${barKm * 1000} m`;
@@ -756,7 +837,12 @@
 
   function updateCoarseZoomLabel() {
     const size = state.coarseWindow * 2;
-    coarseZoomLabel.textContent = `${size}x${size}`;
+    coarseZoomLabel.textContent = `${size}x${size} / ${state.coarseStep}x sample`;
+  }
+
+  function updateDetailZoomLabel() {
+    detailZoomLabel.textContent = `${state.detailSize}x${state.detailSize}`;
+    updateCoordScale();
   }
 
   function setCoarseWindow(nextWindow) {
@@ -765,6 +851,30 @@
     state.coarseWindow = clamped;
     updateCoarseZoomLabel();
     loadCoarse();
+  }
+
+  function setCoarseStep(nextStep) {
+    const step = clamp(Number(nextStep) || 1, 1, 8);
+    if (step === state.coarseStep) return;
+    state.coarseStep = step;
+    coarseResolution.value = String(step);
+    updateCoarseZoomLabel();
+    loadCoarse();
+  }
+
+  function setDetailSize(nextSize) {
+    const size = clamp(Number(nextSize) || 512, DETAIL_SIZE_MIN, DETAIL_SIZE_MAX);
+    if (size === state.detailSize) return;
+    state.detailSize = size;
+    state.detailRaw = null;
+    state.detailRawLoading = false;
+    state.detailRawPromise = null;
+    updateDetailZoomLabel();
+    loadDetail();
+  }
+
+  function detailPanStep() {
+    return Math.max(64, Math.round((state.detailSize / 4) / 64) * 64);
   }
 
   let _lastDetailClick = null;
@@ -812,10 +922,13 @@
 
   // ── URL builders ──
   function coarseUrl() {
-    const { seed, channel, coarseOffsetI, coarseOffsetJ, coarseWindow } = state;
+    const { seed, channel, coarseOffsetI, coarseOffsetJ, coarseWindow, coarseStep } = state;
     const ci0 = coarseOffsetI - coarseWindow, ci1 = coarseOffsetI + coarseWindow;
     const cj0 = coarseOffsetJ - coarseWindow, cj1 = coarseOffsetJ + coarseWindow;
-    let url = `/api/coarse.png?channel=${channel}&ci0=${ci0}&ci1=${ci1}&cj0=${cj0}&cj1=${cj1}&_s=${seed}`;
+    if (state.mapMode === 'biomes') {
+      return `/api/coarse_biomes.png?ci0=${ci0}&ci1=${ci1}&cj0=${cj0}&cj1=${cj1}&step=${coarseStep}&_s=${seed}`;
+    }
+    let url = `/api/coarse.png?channel=${channel}&ci0=${ci0}&ci1=${ci1}&cj0=${cj0}&cj1=${cj1}&step=${coarseStep}&_s=${seed}`;
     if (filterEnable.checked) {
       CHANNEL_META.forEach(({ ch }) => {
         const minEl = document.getElementById(`fch-${ch}-min`);
@@ -829,13 +942,14 @@
   }
 
   function detailUrl() {
-    const { seed, detailCI: ci, detailCJ: cj, detailPanI: pi, detailPanJ: pj, detailMode: mode } = state;
-    return `/api/detail.png?ci=${ci}&cj=${cj}&detail_size=${DETAIL_SIZE}&pan_i=${pi}&pan_j=${pj}&mode=${mode}&_s=${seed}`;
+    const { seed, detailCI: ci, detailCJ: cj, detailPanI: pi, detailPanJ: pj, detailMode: mode, detailSize } = state;
+    return `/api/detail.png?ci=${ci}&cj=${cj}&detail_size=${detailSize}&pan_i=${pi}&pan_j=${pj}&mode=${mode}&_s=${seed}`;
   }
 
   // ── Load helpers ──
   function loadCoarse() {
     state.coarseData = null;
+    state.biomeData = null;
     coarseImg.classList.add('loading');
     coarseSpinner.classList.add('active');
     coarsePlaceholder.style.display = 'none';
@@ -843,10 +957,15 @@
   }
 
   async function loadCoarseData() {
-    const { coarseOffsetI: oi, coarseOffsetJ: oj, coarseWindow: w, seed } = state;
+    const { coarseOffsetI: oi, coarseOffsetJ: oj, coarseWindow: w, coarseStep, seed } = state;
     const ci0 = oi - w, ci1 = oi + w, cj0 = oj - w, cj1 = oj + w;
     try {
-      const res = await fetch(`/api/coarse_data.json?ci0=${ci0}&ci1=${ci1}&cj0=${cj0}&cj1=${cj1}&_s=${seed}`);
+      if (state.mapMode === 'biomes') {
+        const res = await fetch(`/api/biome_data.json?ci0=${ci0}&ci1=${ci1}&cj0=${cj0}&cj1=${cj1}&step=${coarseStep}&_s=${seed}`);
+        state.biomeData = await res.json();
+        return;
+      }
+      const res = await fetch(`/api/coarse_data.json?ci0=${ci0}&ci1=${ci1}&cj0=${cj0}&cj1=${cj1}&step=${coarseStep}&_s=${seed}`);
       state.coarseData = await res.json();
     } catch (_) {}
   }
@@ -854,6 +973,8 @@
   function loadDetail() {
     if (state.detailCI === null) return;
     state.detailRaw = null;
+    state.detailRawLoading = false;
+    state.detailRawPromise = null;
     detailImg.style.display = 'block';
     detailImg.classList.add('loading');
     detailSpinner.classList.add('active');
@@ -864,19 +985,33 @@
 
   async function loadDetailRaw() {
     if (state.detailCI === null) return;
-    const { detailCI: ci, detailCJ: cj, detailPanI: pi, detailPanJ: pj, seed } = state;
+    if (state.detailRawLoading && state.detailRawPromise) return state.detailRawPromise;
+    const { detailCI: ci, detailCJ: cj, detailPanI: pi, detailPanJ: pj, detailSize, seed } = state;
+    state.detailRawLoading = true;
+    const requestKey = `${ci}:${cj}:${pi}:${pj}:${detailSize}:${seed}`;
+    state.detailRawPromise = (async () => {
     try {
-      const res = await fetch(`/api/detail_raw?ci=${ci}&cj=${cj}&detail_size=${DETAIL_SIZE}&pan_i=${pi}&pan_j=${pj}&_s=${seed}`);
+      const res = await fetch(`/api/detail_raw?ci=${ci}&cj=${cj}&detail_size=${detailSize}&pan_i=${pi}&pan_j=${pj}&_s=${seed}`);
       const h = parseInt(res.headers.get('X-Height'));
       const w = parseInt(res.headers.get('X-Width'));
       const hasTemp = res.headers.get('X-Has-Temp') === '1';
       const buf = await res.arrayBuffer();
-      state.detailRaw = {
-        elev: new Int16Array(buf, 0, h * w),
-        temp: hasTemp ? new Float32Array(buf, h * w * 2, h * w) : null,
-        h, w,
-      };
-    } catch (_) {}
+      const currentKey = `${state.detailCI}:${state.detailCJ}:${state.detailPanI}:${state.detailPanJ}:${state.detailSize}:${state.seed}`;
+      if (currentKey === requestKey) {
+        state.detailRaw = {
+          elev: new Int16Array(buf, 0, h * w),
+          temp: hasTemp ? new Float32Array(buf, h * w * 2, h * w) : null,
+          h, w,
+        };
+      }
+    } catch (_) {
+      // Hover data is optional; the rendered image remains usable without it.
+    } finally {
+      state.detailRawLoading = false;
+      state.detailRawPromise = null;
+    }
+    })();
+    return state.detailRawPromise;
   }
 
   // ── Image events ──
@@ -884,7 +1019,7 @@
     coarseImg.classList.remove('loading');
     coarseSpinner.classList.remove('active');
     const { coarseOffsetI: oi, coarseOffsetJ: oj, coarseWindow: w } = state;
-    coarseInfo.textContent = `ci=[${oi-w}…${oi+w}], cj=[${oj-w}…${oj+w}]`;
+    coarseInfo.textContent = `ci=[${oi-w}…${oi+w}], cj=[${oj-w}…${oj+w}] | sample ${state.coarseStep}x`;
     updateTileMarker();
     loadCoarseData();
   };
@@ -896,7 +1031,7 @@
   detailImg.onload = () => {
     detailImg.classList.remove('loading');
     detailSpinner.classList.remove('active');
-    loadDetailRaw();
+    detailInfo.textContent = `ci=${state.detailCI}, cj=${state.detailCJ} | ${state.detailSize}x${state.detailSize}`;
   };
   detailImg.onerror = () => {
     detailImg.classList.remove('loading');
@@ -932,12 +1067,32 @@
 
   // ── Coarse hover ──
   coarseImg.addEventListener('mousemove', (e) => {
+    if (state.mapMode === 'biomes') {
+      if (!state.biomeData) return;
+      const { ci0, ci1, cj0, cj1, ids } = state.biomeData;
+      const rect = coarseImg.getBoundingClientRect();
+      const ci = Math.floor(ci0 + (e.clientY - rect.top) / rect.height * (ci1 - ci0));
+      const cj = Math.floor(cj0 + (e.clientX - rect.left) / rect.width * (cj1 - cj0));
+      const resolutionStep = state.biomeData.resolution_step || 1;
+      const row = Math.floor((ci - ci0) / resolutionStep), col = Math.floor((cj - cj0) / resolutionStep);
+      if (row < 0 || row >= ids.length || col < 0 || col >= ids[row].length) return;
+      const id = ids[row][col];
+      const biome = state.biomeMeta.get(String(id));
+      const blockSpan = state.biomeData.resolution_blocks || 1;
+      const worldX = Math.round(cj * blockSpan);
+      const worldZ = Math.round(ci * blockSpan);
+      const html = `<div class="ht-coord">coarse cell (${ci}, ${cj})</div>`
+        + `<div class="ht-row"><span class="ht-label">Biome</span><span class="ht-val">${biome ? biome.name : 'Unknown'}</span></div>`
+        + `<div class="ht-row"><span class="ht-label">Approx. X/Z</span><span class="ht-val">${worldX} / ${worldZ}</span></div>`;
+      showTooltip(e, html);
+      return;
+    }
     if (!state.coarseData) return;
-    const { ci0, ci1, cj0, cj1, channels } = state.coarseData;
+    const { ci0, ci1, cj0, cj1, channels, resolution_step = 1 } = state.coarseData;
     const rect = coarseImg.getBoundingClientRect();
     const ci = Math.floor(ci0 + (e.clientY - rect.top)  / rect.height * (ci1 - ci0));
     const cj = Math.floor(cj0 + (e.clientX - rect.left) / rect.width  * (cj1 - cj0));
-    const row = ci - ci0, col = cj - cj0;
+    const row = Math.floor((ci - ci0) / resolution_step), col = Math.floor((cj - cj0) / resolution_step);
     if (row < 0 || row >= ci1 - ci0 || col < 0 || col >= cj1 - cj0) return;
     let html = `<div class="ht-coord">ci=${ci}, cj=${cj}</div>`;
     Object.entries(channels).forEach(([name, data]) => {
@@ -963,7 +1118,10 @@
 
   // ── Detail hover ──
   detailImg.addEventListener('mousemove', (e) => {
-    if (!state.detailRaw) return;
+    if (!state.detailRaw) {
+      loadDetailRaw();
+      return;
+    }
     const { elev, temp, h, w } = state.detailRaw;
     const rect = detailImg.getBoundingClientRect();
     const col = Math.floor((e.clientX - rect.left) / rect.width  * w);
@@ -976,7 +1134,10 @@
   });
   detailImg.addEventListener('mouseleave', hideTooltip);
 
-  detailImg.addEventListener('click', (e) => {
+  detailImg.addEventListener('click', async (e) => {
+    if (!state.detailRaw) {
+      await loadDetailRaw();
+    }
     if (!state.detailRaw) return;
     const { h, w } = state.detailRaw;
     const rect = detailImg.getBoundingClientRect();
@@ -994,6 +1155,9 @@
       btn.textContent = name;
       if (i === state.channel) btn.classList.add('active');
       btn.addEventListener('click', () => {
+        state.mapMode = 'channel';
+        btnBiomes.classList.remove('active');
+        btnBiomes.textContent = 'Show Biomes';
         state.channel = i;
         channelButtons.querySelectorAll('button').forEach((b, j) => b.classList.toggle('active', j === i));
         loadCoarse();
@@ -1002,11 +1166,22 @@
     });
   }
 
+  btnBiomes.addEventListener('click', () => {
+    state.mapMode = state.mapMode === 'biomes' ? 'channel' : 'biomes';
+    btnBiomes.classList.toggle('active', state.mapMode === 'biomes');
+    btnBiomes.textContent = state.mapMode === 'biomes' ? 'Showing Biomes' : 'Show Biomes';
+    filterEnable.disabled = state.mapMode === 'biomes';
+    coarseInfo.textContent = state.mapMode === 'biomes'
+      ? 'categorical biome preview — hover for names'
+      : 'click a tile to load detail';
+    loadCoarse();
+  });
+
   // ── Detail mode ──
-  ['relief', 'elevation', 'temperature'].forEach(mode => {
+  ['relief', 'elevation', 'temperature', 'biomes'].forEach(mode => {
     document.getElementById(`mode-${mode}`).addEventListener('click', () => {
       state.detailMode = mode;
-      ['relief','elevation','temperature'].forEach(m =>
+      ['relief','elevation','temperature','biomes'].forEach(m =>
         document.getElementById(`mode-${m}`).classList.toggle('active', m === mode));
       loadDetail();
     });
@@ -1044,6 +1219,8 @@
     state.detailCI = state.detailCJ = null;
     state.detailPanI = state.detailPanJ = 0;
     state.detailRaw = null;
+    state.detailRawLoading = false;
+    state.detailRawPromise = null;
     detailImg.style.display = 'none';
     detailPlaceholder.style.display = '';
     detailInfo.textContent = 'click coarse map to load';
@@ -1085,6 +1262,7 @@
   document.getElementById('coarse-right').addEventListener('click', () => { state.coarseOffsetJ += COARSE_PAN_STEP; loadCoarse(); });
   document.getElementById('coarse-zoom-in').addEventListener('click', () => setCoarseWindow(Math.round(state.coarseWindow * 0.8)));
   document.getElementById('coarse-zoom-out').addEventListener('click', () => setCoarseWindow(Math.round(state.coarseWindow * 1.25)));
+  coarseResolution.addEventListener('change', () => setCoarseStep(coarseResolution.value));
 
   coarseContainer.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -1092,10 +1270,17 @@
     setCoarseWindow(Math.round(state.coarseWindow * factor));
   }, { passive: false });
 
-  document.getElementById('detail-up').addEventListener('click',    () => { if (state.detailCI !== null) { state.detailPanI -= DETAIL_PAN_STEP; loadDetail(); } });
-  document.getElementById('detail-down').addEventListener('click',  () => { if (state.detailCI !== null) { state.detailPanI += DETAIL_PAN_STEP; loadDetail(); } });
-  document.getElementById('detail-left').addEventListener('click',  () => { if (state.detailCI !== null) { state.detailPanJ -= DETAIL_PAN_STEP; loadDetail(); } });
-  document.getElementById('detail-right').addEventListener('click', () => { if (state.detailCI !== null) { state.detailPanJ += DETAIL_PAN_STEP; loadDetail(); } });
+  document.getElementById('detail-zoom-in').addEventListener('click',  () => setDetailSize(state.detailSize / 2));
+  document.getElementById('detail-zoom-out').addEventListener('click', () => setDetailSize(state.detailSize * 2));
+  document.getElementById('detail-up').addEventListener('click',    () => { if (state.detailCI !== null) { state.detailPanI -= detailPanStep(); loadDetail(); } });
+  document.getElementById('detail-down').addEventListener('click',  () => { if (state.detailCI !== null) { state.detailPanI += detailPanStep(); loadDetail(); } });
+  document.getElementById('detail-left').addEventListener('click',  () => { if (state.detailCI !== null) { state.detailPanJ -= detailPanStep(); loadDetail(); } });
+  document.getElementById('detail-right').addEventListener('click', () => { if (state.detailCI !== null) { state.detailPanJ += detailPanStep(); loadDetail(); } });
+
+  detailContainer.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    setDetailSize(state.detailSize * (e.deltaY < 0 ? 0.5 : 2));
+  }, { passive: false });
 
   // ── Init ──
   async function init() {
@@ -1112,8 +1297,14 @@
       state.mapHeightBlocks = data.map_height_blocks || 0;
       seedDisplay.textContent = data.seed;
       buildChannelButtons(data.channels);
+      buildBiomeLegend(data.biomes);
+      if (data.coarse_biome_resolution_blocks) {
+        biomeResolutionNote.textContent = `Preview cell size: ${data.coarse_biome_resolution_blocks} blocks. Minecraft stores horizontal biomes at 4-block resolution; close inspection uses the detail map.`;
+      }
       updateCoordScale();
       updateCoarseZoomLabel();
+      updateDetailZoomLabel();
+      coarseResolution.value = String(state.coarseStep);
       statusBar.textContent = `Connected — seed ${data.seed} | scale ${data.scale}×`;
       loadCoarse();
     } catch (e) {

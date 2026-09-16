@@ -36,13 +36,13 @@ public class TerrainDiffusionDensityFunction implements DensityFunction {
 
         HeightmapData data = LocalTerrainProvider.getInstance().fetchHeightmap(blockStartZ, blockStartX, blockEndZ, blockEndX);
         if (data == null || data.heightmap == null) {
-            return -y;
+            throw new IllegalStateException("Terrain data unavailable; refusing to generate a false surface");
         }
 
         int localX = Math.max(0, Math.min(data.width  - 1, x - blockStartX));
         int localZ = Math.max(0, Math.min(data.height - 1, z - blockStartZ));
 
-        int targetHeight = HeightConverter.convertToMinecraftHeight(data.heightmap[localZ][localX]);
+        int targetHeight = data.blockHeights[localZ][localX];
         return targetHeight - y;
     }
 
@@ -92,15 +92,13 @@ public class TerrainDiffusionDensityFunction implements DensityFunction {
 
             HeightmapData data = ctx.data;
             if (data == null || data.heightmap == null) {
-                densities[i] = -y;
-                continue;
+                throw new IllegalStateException("Terrain data unavailable; refusing to generate a false surface");
             }
 
             int localX = Math.max(0, Math.min(data.width  - 1, x - ctx.blockStartX));
             int localZ = Math.max(0, Math.min(data.height - 1, z - ctx.blockStartZ));
 
-            int targetHeight = HeightConverter
-                .convertToMinecraftHeight(data.heightmap[localZ][localX]);
+            int targetHeight = data.blockHeights[localZ][localX];
             densities[i] = targetHeight - y;
         }
     }
@@ -112,12 +110,12 @@ public class TerrainDiffusionDensityFunction implements DensityFunction {
 
     @Override
     public double minValue() {
-        return -64;
+        return -100000;
     }
 
     @Override
     public double maxValue() {
-        return 1024;
+        return 100000;
     }
 
     @Override

@@ -51,7 +51,7 @@ public final class SpawnSelector {
                 coarse = LocalTerrainProvider.getPipelineCoarse(ci0, cj0, ci1, cj1);
             } catch (Exception e) {
                 LOG.error("SpawnSelector: failed to query coarse map at size {}", regionSize, e);
-                continue;
+                throw new IllegalStateException("Cannot find spawn because terrain inference failed", e);
             }
 
             int H = ci1 - ci0;
@@ -78,10 +78,10 @@ public final class SpawnSelector {
         try {
             LocalTerrainProvider.HeightmapData data =
                     LocalTerrainProvider.getInstance().fetchHeightmap(blockZ, blockX, blockZ + 1, blockX + 1);
-            return Math.max(HeightConverter.convertToMinecraftHeight(data.heightmap[0][0]), 64);
+            return Math.max(HeightConverter.convertToMinecraftHeight(data.heightmap[0][0]), HeightConverter.fallbackSpawnY());
         } catch (Exception e) {
             LOG.error("SpawnSelector: failed to fetch heightmap at ({}, {})", blockX, blockZ, e);
-            return 64;
+            throw new IllegalStateException("Cannot place spawn because terrain preparation failed", e);
         }
     }
 

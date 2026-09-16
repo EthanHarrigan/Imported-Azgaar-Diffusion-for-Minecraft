@@ -4,7 +4,8 @@ public record BlueprintCompileOptions(double physicalWidthKm, float elevationNoi
                                       float climateNoiseRatio, double edgeBlendKm,
                                       double southClimateLatitudeDeg,
                                       float southPrecipitationMultiplier) {
-    public static final double DEFAULT_WIDTH_KM = 40_075.0;
+    /** 98 coarse cells: approximately 75,264 x 37,632 blocks at the scale-3 default. */
+    public static final double DEFAULT_WIDTH_KM = 750.0;
     public static final double COARSE_KM_PER_PIXEL = 7.68;
 
     public BlueprintCompileOptions {
@@ -16,5 +17,5 @@ public record BlueprintCompileOptions(double physicalWidthKm, float elevationNoi
         if (!(southPrecipitationMultiplier > 0 && southPrecipitationMultiplier <= 10)) throw new IllegalArgumentException("Southern precipitation multiplier must be >0 and <=10");
     }
 
-    public static BlueprintCompileOptions defaults() { return new BlueprintCompileOptions(DEFAULT_WIDTH_KM, .5f, .2f, 250, -20, 2f); }
+    public static BlueprintCompileOptions defaults() { return new BlueprintCompileOptions(DEFAULT_WIDTH_KM, .35f, .2f, 10, -20, 2f); }
 }

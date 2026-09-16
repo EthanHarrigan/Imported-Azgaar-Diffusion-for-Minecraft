@@ -5,7 +5,19 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "BiomeMixin",
-    "MinecraftServerMixin"
+    "MinecraftServerMixin",
+    "WorldInitializationMixin",
+    "ChunkGeneratorWaterMixin",
+    "OceanFluidMixin",
+    "BadlandsPillarHeightMixin",
+    "TreeEcotoneMixin",
+    "SandSeaPatchMixin",
+    "StructureTerrainGuardMixin",
+    "MonumentHeightMixin",
+    "UndergroundJigsawHeightMixin",
+    "UniformHeightProviderAccessor",
+    "DhTerrainPreviewMixin",
+    "DhStructureLockMixin"
   ],
   "injectors": {
     "defaultRequire": 1

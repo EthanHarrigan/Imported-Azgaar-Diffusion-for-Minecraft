@@ -115,6 +115,10 @@ gradle-app.setting
 # Common working directory
 run/
 runs/
+# Standalone diagnostic runtime data; never publish models, local settings, or logs.
+/terrain-diffusion-models/
+/config/
+/logs/
 ce-check/
 newest-compiled/
 

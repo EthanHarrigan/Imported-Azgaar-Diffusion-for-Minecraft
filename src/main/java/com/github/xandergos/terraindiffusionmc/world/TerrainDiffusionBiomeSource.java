@@ -3,6 +3,8 @@ package com.github.xandergos.terraindiffusionmc.world;
 import com.github.xandergos.terraindiffusionmc.config.TerrainDiffusionConfig;
 import com.github.xandergos.terraindiffusionmc.pipeline.LocalTerrainProvider;
 import com.github.xandergos.terraindiffusionmc.pipeline.LocalTerrainProvider.HeightmapData;
+import com.github.xandergos.terraindiffusionmc.pipeline.BiomeIds;
+import com.github.xandergos.terraindiffusionmc.blueprint.WorldBlueprintManager;
 import com.mojang.datafixers.util.Pair;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.MapCodec;
@@ -55,30 +57,60 @@ public class TerrainDiffusionBiomeSource extends BiomeSource {
     private void requireBiomeIdMap() {
         if (biomeIdMap == null) {
             biomeIdMap = Map.ofEntries(
-                    entry((short) 1, this.biomeLookup.getOrThrow(BiomeKeys.PLAINS)),
-                    entry((short) 3, this.biomeLookup.getOrThrow(BiomeKeys.SNOWY_PLAINS)),
-                    entry((short) 5, this.biomeLookup.getOrThrow(BiomeKeys.DESERT)),
-                    entry((short) 6, this.biomeLookup.getOrThrow(BiomeKeys.SWAMP)),
-                    entry((short) 7, this.biomeLookup.getOrThrow(BiomeKeys.MANGROVE_SWAMP)),
-                    entry((short) 8, this.biomeLookup.getOrThrow(BiomeKeys.FOREST)),
-                    entry((short) 15, this.biomeLookup.getOrThrow(BiomeKeys.TAIGA)),
-                    entry((short) 16, this.biomeLookup.getOrThrow(BiomeKeys.SNOWY_TAIGA)),
-                    entry((short) 17, this.biomeLookup.getOrThrow(BiomeKeys.SAVANNA)),
-                    entry((short) 19, this.biomeLookup.getOrThrow(BiomeKeys.WINDSWEPT_HILLS)),
-                    entry((short) 23, this.biomeLookup.getOrThrow(BiomeKeys.JUNGLE)),
-                    entry((short) 26, this.biomeLookup.getOrThrow(BiomeKeys.BADLANDS)),
-                    entry((short) 29, this.biomeLookup.getOrThrow(BiomeKeys.MEADOW)),
-                    entry((short) 31, this.biomeLookup.getOrThrow(BiomeKeys.GROVE)),
-                    entry((short) 32, this.biomeLookup.getOrThrow(BiomeKeys.SNOWY_SLOPES)),
-                    entry((short) 33, this.biomeLookup.getOrThrow(BiomeKeys.FROZEN_PEAKS)),
-                    entry((short) 35, this.biomeLookup.getOrThrow(BiomeKeys.STONY_PEAKS)),
-                    entry((short) 41, this.biomeLookup.getOrThrow(BiomeKeys.WARM_OCEAN)),
-                    entry((short) 44, this.biomeLookup.getOrThrow(BiomeKeys.OCEAN)),
-                    entry((short) 46, this.biomeLookup.getOrThrow(BiomeKeys.COLD_OCEAN)),
-                    entry((short) 48, this.biomeLookup.getOrThrow(BiomeKeys.FROZEN_OCEAN)),
-                    entry((short) 108, this.biomeLookup.getOrThrow(FOREST_SPARSE)),
-                    entry((short) 115, this.biomeLookup.getOrThrow(TAIGA_SPARSE)),
-                    entry((short) 116, this.biomeLookup.getOrThrow(SNOWY_TAIGA_SPARSE))
+                    entry(BiomeIds.PLAINS,biomeLookup.getOrThrow(BiomeKeys.PLAINS)),
+                    entry(BiomeIds.SUNFLOWER_PLAINS,biomeLookup.getOrThrow(BiomeKeys.SUNFLOWER_PLAINS)),
+                    entry(BiomeIds.SNOWY_PLAINS,biomeLookup.getOrThrow(BiomeKeys.SNOWY_PLAINS)),
+                    entry(BiomeIds.ICE_SPIKES,biomeLookup.getOrThrow(BiomeKeys.ICE_SPIKES)),
+                    entry(BiomeIds.DESERT,biomeLookup.getOrThrow(BiomeKeys.DESERT)),
+                    entry(BiomeIds.SWAMP,biomeLookup.getOrThrow(BiomeKeys.SWAMP)),
+                    entry(BiomeIds.MANGROVE_SWAMP,biomeLookup.getOrThrow(BiomeKeys.MANGROVE_SWAMP)),
+                    entry(BiomeIds.FOREST,biomeLookup.getOrThrow(BiomeKeys.FOREST)),
+                    entry(BiomeIds.FLOWER_FOREST,biomeLookup.getOrThrow(BiomeKeys.FLOWER_FOREST)),
+                    entry(BiomeIds.BIRCH_FOREST,biomeLookup.getOrThrow(BiomeKeys.BIRCH_FOREST)),
+                    entry(BiomeIds.OLD_GROWTH_BIRCH_FOREST,biomeLookup.getOrThrow(BiomeKeys.OLD_GROWTH_BIRCH_FOREST)),
+                    entry(BiomeIds.DARK_FOREST,biomeLookup.getOrThrow(BiomeKeys.DARK_FOREST)),
+                    entry(BiomeIds.PALE_GARDEN,biomeLookup.getOrThrow(BiomeKeys.PALE_GARDEN)),
+                    entry(BiomeIds.TAIGA,biomeLookup.getOrThrow(BiomeKeys.TAIGA)),
+                    entry(BiomeIds.SNOWY_TAIGA,biomeLookup.getOrThrow(BiomeKeys.SNOWY_TAIGA)),
+                    entry(BiomeIds.OLD_GROWTH_PINE_TAIGA,biomeLookup.getOrThrow(BiomeKeys.OLD_GROWTH_PINE_TAIGA)),
+                    entry(BiomeIds.OLD_GROWTH_SPRUCE_TAIGA,biomeLookup.getOrThrow(BiomeKeys.OLD_GROWTH_SPRUCE_TAIGA)),
+                    entry(BiomeIds.SAVANNA,biomeLookup.getOrThrow(BiomeKeys.SAVANNA)),
+                    entry(BiomeIds.SAVANNA_PLATEAU,biomeLookup.getOrThrow(BiomeKeys.SAVANNA_PLATEAU)),
+                    entry(BiomeIds.WINDSWEPT_HILLS,biomeLookup.getOrThrow(BiomeKeys.WINDSWEPT_HILLS)),
+                    entry(BiomeIds.WINDSWEPT_GRAVELLY_HILLS,biomeLookup.getOrThrow(BiomeKeys.WINDSWEPT_GRAVELLY_HILLS)),
+                    entry(BiomeIds.WINDSWEPT_FOREST,biomeLookup.getOrThrow(BiomeKeys.WINDSWEPT_FOREST)),
+                    entry(BiomeIds.WINDSWEPT_SAVANNA,biomeLookup.getOrThrow(BiomeKeys.WINDSWEPT_SAVANNA)),
+                    entry(BiomeIds.JUNGLE,biomeLookup.getOrThrow(BiomeKeys.JUNGLE)),
+                    entry(BiomeIds.SPARSE_JUNGLE,biomeLookup.getOrThrow(BiomeKeys.SPARSE_JUNGLE)),
+                    entry(BiomeIds.BAMBOO_JUNGLE,biomeLookup.getOrThrow(BiomeKeys.BAMBOO_JUNGLE)),
+                    entry(BiomeIds.BADLANDS,biomeLookup.getOrThrow(BiomeKeys.BADLANDS)),
+                    entry(BiomeIds.ERODED_BADLANDS,biomeLookup.getOrThrow(BiomeKeys.ERODED_BADLANDS)),
+                    entry(BiomeIds.WOODED_BADLANDS,biomeLookup.getOrThrow(BiomeKeys.WOODED_BADLANDS)),
+                    entry(BiomeIds.MEADOW,biomeLookup.getOrThrow(BiomeKeys.MEADOW)),
+                    entry(BiomeIds.CHERRY_GROVE,biomeLookup.getOrThrow(BiomeKeys.CHERRY_GROVE)),
+                    entry(BiomeIds.GROVE,biomeLookup.getOrThrow(BiomeKeys.GROVE)),
+                    entry(BiomeIds.SNOWY_SLOPES,biomeLookup.getOrThrow(BiomeKeys.SNOWY_SLOPES)),
+                    entry(BiomeIds.FROZEN_PEAKS,biomeLookup.getOrThrow(BiomeKeys.FROZEN_PEAKS)),
+                    entry(BiomeIds.JAGGED_PEAKS,biomeLookup.getOrThrow(BiomeKeys.JAGGED_PEAKS)),
+                    entry(BiomeIds.STONY_PEAKS,biomeLookup.getOrThrow(BiomeKeys.STONY_PEAKS)),
+                    entry(BiomeIds.RIVER,biomeLookup.getOrThrow(BiomeKeys.RIVER)),
+                    entry(BiomeIds.FROZEN_RIVER,biomeLookup.getOrThrow(BiomeKeys.FROZEN_RIVER)),
+                    entry(BiomeIds.BEACH,biomeLookup.getOrThrow(BiomeKeys.BEACH)),
+                    entry(BiomeIds.SNOWY_BEACH,biomeLookup.getOrThrow(BiomeKeys.SNOWY_BEACH)),
+                    entry(BiomeIds.STONY_SHORE,biomeLookup.getOrThrow(BiomeKeys.STONY_SHORE)),
+                    entry(BiomeIds.WARM_OCEAN,biomeLookup.getOrThrow(BiomeKeys.WARM_OCEAN)),
+                    entry(BiomeIds.LUKEWARM_OCEAN,biomeLookup.getOrThrow(BiomeKeys.LUKEWARM_OCEAN)),
+                    entry(BiomeIds.DEEP_LUKEWARM_OCEAN,biomeLookup.getOrThrow(BiomeKeys.DEEP_LUKEWARM_OCEAN)),
+                    entry(BiomeIds.OCEAN,biomeLookup.getOrThrow(BiomeKeys.OCEAN)),
+                    entry(BiomeIds.DEEP_OCEAN,biomeLookup.getOrThrow(BiomeKeys.DEEP_OCEAN)),
+                    entry(BiomeIds.COLD_OCEAN,biomeLookup.getOrThrow(BiomeKeys.COLD_OCEAN)),
+                    entry(BiomeIds.DEEP_COLD_OCEAN,biomeLookup.getOrThrow(BiomeKeys.DEEP_COLD_OCEAN)),
+                    entry(BiomeIds.FROZEN_OCEAN,biomeLookup.getOrThrow(BiomeKeys.FROZEN_OCEAN)),
+                    entry(BiomeIds.DEEP_FROZEN_OCEAN,biomeLookup.getOrThrow(BiomeKeys.DEEP_FROZEN_OCEAN)),
+                    entry(BiomeIds.MUSHROOM_FIELDS,biomeLookup.getOrThrow(BiomeKeys.MUSHROOM_FIELDS)),
+                    entry(BiomeIds.FOREST_SPARSE,biomeLookup.getOrThrow(FOREST_SPARSE)),
+                    entry(BiomeIds.TAIGA_SPARSE,biomeLookup.getOrThrow(TAIGA_SPARSE)),
+                    entry(BiomeIds.SNOWY_TAIGA_SPARSE,biomeLookup.getOrThrow(SNOWY_TAIGA_SPARSE))
             );
         }
     }
@@ -109,6 +141,18 @@ public class TerrainDiffusionBiomeSource extends BiomeSource {
         int blockEndX = blockStartX + tileSize;
         int blockEndZ = blockStartZ + tileSize;
 
+        BiomeTileCache cache=BiomeTileCache.active();
+        if(cache!=null){
+            int side=tileSize/4;
+            short[] ids=cache.get(tileX,tileZ,()->{
+                HeightmapData generated=LocalTerrainProvider.getInstance().fetchHeightmap(blockStartZ,blockStartX,blockEndZ,blockEndX);
+                if(generated==null||generated.biomeIds==null)throw new IllegalStateException("Missing generated biome tile");
+                short[] result=new short[side*side];
+                for(int dz=0;dz<side;dz++)for(int dx=0;dx<side;dx++)result[dz*side+dx]=generated.biomeIds[dz*4][dx*4];
+                return result;
+            });
+            return biomeIdMap.getOrDefault(ids[((blockZ-blockStartZ)/4)*side+(blockX-blockStartX)/4],defaultEntry);
+        }
         HeightmapData data = LocalTerrainProvider.getInstance().fetchHeightmap(blockStartZ, blockStartX, blockEndZ, blockEndX);
         if (data != null && data.biomeIds != null) {
             int localX = Math.max(0, Math.min(data.width  - 1, blockX - blockStartX));
@@ -122,12 +166,30 @@ public class TerrainDiffusionBiomeSource extends BiomeSource {
 
     @Override
     public Pair<BlockPos, RegistryEntry<Biome>> locateBiome(BlockPos origin, int radius, int horizontalBlockCheckInterval, int verticalBlockCheckInterval, Predicate<RegistryEntry<Biome>> predicate, MultiNoiseUtil.MultiNoiseSampler noiseSampler, WorldView world) {
-        return null;
+        var reserved=locateReserved(origin.getX(),origin.getY(),origin.getZ(),radius,predicate,noiseSampler);
+        return reserved!=null?reserved:super.locateBiome(origin,radius,horizontalBlockCheckInterval,verticalBlockCheckInterval,predicate,noiseSampler,world);
     }
 
     @Override
     public Pair<BlockPos, RegistryEntry<Biome>> locateBiome(int x, int y, int z, int radius, int blockCheckInterval, Predicate<RegistryEntry<Biome>> predicate, Random random, boolean bl, MultiNoiseUtil.MultiNoiseSampler noiseSampler) {
-        return null;
+        if(!bl)return super.locateBiome(x,y,z,radius,blockCheckInterval,predicate,random,false,noiseSampler);
+        var reserved=locateReserved(x,y,z,radius,predicate,noiseSampler);
+        return reserved!=null?reserved:super.locateBiome(x,y,z,radius,blockCheckInterval,predicate,random,bl,noiseSampler);
+    }
+
+    private Pair<BlockPos,RegistryEntry<Biome>> locateReserved(int x,int y,int z,int radius,
+                                                                Predicate<RegistryEntry<Biome>> predicate,MultiNoiseUtil.MultiNoiseSampler noise){
+        requireBiomeIdMap();Pair<BlockPos,RegistryEntry<Biome>> best=null;double bestDistance=Double.MAX_VALUE;
+        for(var reservation:WorldBlueprintManager.biomeReservations()){
+            RegistryEntry<Biome> entry=biomeIdMap.get(reservation.biomeId());if(entry==null||!predicate.test(entry))continue;
+            var p=WorldBlueprintManager.reservationCenter(reservation);double distance=Math.hypot(p.x()-x,p.z()-z);
+            if(distance<=radius&&distance<bestDistance){
+                BlockPos pos=new BlockPos((int)Math.round(p.x()),y,(int)Math.round(p.z()));
+                RegistryEntry<Biome> actual=getBiome(BiomeCoords.fromBlock(pos.getX()),BiomeCoords.fromBlock(y),BiomeCoords.fromBlock(pos.getZ()),noise);
+                if(predicate.test(actual)){bestDistance=distance;best=Pair.of(pos,actual);}
+            }
+        }
+        return best;
     }
 }
 

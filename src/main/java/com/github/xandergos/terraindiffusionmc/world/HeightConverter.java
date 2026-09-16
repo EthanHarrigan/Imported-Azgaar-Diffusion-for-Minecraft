@@ -3,7 +3,7 @@ package com.github.xandergos.terraindiffusionmc.world;
 import com.github.xandergos.terraindiffusionmc.pipeline.WorldPipelineModelConfig;
 
 public class HeightConverter {
-    private static final int SEA_LEVEL = 63;
+    private static final int SEA_LEVEL = VerticalProfile.SEA_LEVEL;
     private static final short MAX_PIPELINE_METERS = 10_000;
 
     private static float getResolutionForScale(int configuredScale) {
@@ -24,7 +24,7 @@ public class HeightConverter {
             baseY = (int) (-Math.sqrt(Math.abs(meters) + 10) + Math.sqrt(10.0)) - 1;
         }
 
-        return baseY + SEA_LEVEL;
+        return Math.clamp(baseY + SEA_LEVEL, VerticalProfile.BOTTOM_Y + 32, VerticalProfile.TOP_Y - 48);
     }
 
     /**
@@ -33,4 +33,7 @@ public class HeightConverter {
     public static int getMaxGeneratedYForScale(int configuredScale) {
         return convertToMinecraftHeight(MAX_PIPELINE_METERS, configuredScale);
     }
+    public static int seaLevel() { return SEA_LEVEL; }
+    public static int fallbackSpawnY() { return VerticalProfile.fallbackSpawnY(); }
+    public static String profileIdentity() { return VerticalProfile.identity(); }
 }

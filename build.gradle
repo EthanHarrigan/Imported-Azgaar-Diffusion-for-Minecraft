@@ -64,6 +64,9 @@ repositories {
 }
 
 dependencies {
+    // Optional integration; compile against the tested nightly, never bundle DH in our release.
+    modCompileOnly files('libs/DistantHorizons-fabric-3.2.1-b-dev-1.21.11.jar')
+    if (project.hasProperty('testDhPreview')) modLocalRuntime files('libs/DistantHorizons-fabric-3.2.1-b-dev-1.21.11.jar')
     // To change the versions see the gradle.properties file
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
@@ -72,6 +75,7 @@ dependencies {
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation "net.fabricmc:fabric-loader-junit:${project.loader_version}"
 
     if (useCuda) {
         implementation "com.microsoft.onnxruntime:onnxruntime_gpu:1.20.0"
@@ -87,6 +91,9 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    maxHeapSize = '2g'
+    systemProperty 'terrainDiffusion.gameDir', rootProject.file('run').absolutePath
+    if(project.hasProperty('testBlueprint')) systemProperty 'terrainDiffusion.testBlueprint', rootProject.file(project.property('testBlueprint')).absolutePath
 }
 
 processResources {
@@ -172,6 +179,56 @@ task pipelineTest(type: JavaExec, dependsOn: compileJava) {
     systemProperty 'terrainDiffusion.gameDir', rootProject.file('run').absolutePath
 }
 
+tasks.register('hydrologyCheck', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.hydrology.HydrologyIntegrationCheck'
+    jvmArgs '-Xmx8g'
+    systemProperty 'terrainDiffusion.gameDir', rootProject.file('run').absolutePath
+    args project.findProperty('mapJson') ?: '', rootProject.file(project.findProperty('hydrologyOutput') ?: 'build/hydrology-integration').absolutePath, project.findProperty('mapWidthKm') ?: '100', project.findProperty('checkpointSource') ?: '', project.findProperty('hydrologyCompileOnly') ?: 'false', project.findProperty('hydrologyWaterOnly') ?: 'false'
+}
+
+tasks.register('savedValleyAudit', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.hydrology.SavedValleyAudit'
+    jvmArgs '-Xmx2g'
+    args project.findProperty('savedBlueprint'), rootProject.file(project.findProperty('auditOutput') ?: 'build/saved-valley-audit').absolutePath, project.findProperty('auditX') ?: '17374', project.findProperty('auditZ') ?: '1163'
+}
+tasks.register('savedWaterAudit', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.hydrology.SavedWaterAudit'
+    jvmArgs '-Xmx1g'
+    args project.findProperty('savedWorld')
+}
+
+tasks.register('preparationBenchmark', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.pipeline.PreparationBenchmark'
+    jvmArgs '-Xmx6g'
+    systemProperty 'terrainDiffusion.gameDir', rootProject.file('run').absolutePath
+}
+
+tasks.register('desertImportAudit', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.blueprint.DesertImportAudit'
+    jvmArgs '-Xmx2g'
+    args project.findProperty('mapJson') ?: '', rootProject.file(project.findProperty('auditOutput') ?: 'build/desert-import-audit').absolutePath
+    if(project.hasProperty('auditWidth')) args project.property('auditWidth')
+}
+
+tasks.register('newMapAridAudit', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.blueprint.NewMapAridAudit'
+    jvmArgs '-Xmx2g'
+    systemProperty 'terrainDiffusion.gameDir', rootProject.file('run').absolutePath
+    args rootProject.file(project.findProperty('auditOutput') ?: 'build/blueprint37-map-audit').absolutePath
+}
+
 tasks.register('generateModelAssetManifest') {
     inputs.property('modelRepositorySlug', modelRepositorySlug)
     inputs.property('modelRepositoryRevision', modelRepositoryRevision)
@@ -247,4 +304,33 @@ String sha256Hex(byte[] fileBytes) {
         hexBuilder.append(String.format('%02x', digestByte))
     }
     return hexBuilder.toString()
+}
+
+// Explicit offline startup diagnostics; never part of normal build/test.
+tasks.register('recoverInterruptedWorld', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.world.RecoverInterruptedWorld'
+    jvmArgs '-Xmx1g'
+    args project.findProperty('recoveryWorld') ?: ''
+    if(project.hasProperty('recoverySeed')) args project.property('recoverySeed'), project.property('recoveryFingerprint'), project.property('recoveryScale')
+    if(project.hasProperty('recoveryVerify')) args 'verify'
+}
+
+tasks.register('onnxSessionSmoke', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.pipeline.OnnxSessionSmoke'
+    jvmArgs '-Xmx6g'
+    systemProperty 'terrainDiffusion.gameDir', (project.findProperty('smokeGameDir') ?: rootProject.file('run').absolutePath)
+    args file((project.findProperty('smokeGameDir') ?: rootProject.file('run').absolutePath).toString() + '/terrain-diffusion-models').absolutePath
+}
+
+// Explicit native queue/ownership test; never opens or mutates a Minecraft save.
+tasks.register('terrainStageSmoke', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xandergos.terraindiffusionmc.pipeline.TerrainStageSmoke'
+    jvmArgs '-Xmx6g'
+    systemProperty 'terrainDiffusion.gameDir', rootProject.file('run').absolutePath
 }

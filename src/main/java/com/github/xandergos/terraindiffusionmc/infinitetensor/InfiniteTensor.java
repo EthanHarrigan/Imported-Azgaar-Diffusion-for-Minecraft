@@ -128,7 +128,7 @@ public class InfiniteTensor {
      * Ensures every window intersecting {@code pixelRange} is present in the cache.
      * Recursively ensures upstream dependencies are computed first.
      */
-    void ensureComputed(int[][] pixelRange) {
+    public void ensureComputed(int[][] pixelRange) {
         ensureComputedRanges(Collections.singletonList(pixelRange));
     }
 
@@ -138,7 +138,7 @@ public class InfiniteTensor {
      * deduped (no bounding-box union, so we only request windows that actually intersect
      * at least one range).
      */
-    void ensureComputedRanges(List<int[][]> pixelRanges) {
+    public void ensureComputedRanges(List<int[][]> pixelRanges) {
         Set<List<Integer>> pendingSet = new LinkedHashSet<>();
         for (int[][] range : pixelRanges) {
             int[] lo = outputWindow.getLowestIntersection(range);

@@ -35,7 +35,7 @@ public final class WorldScaleSettingsState extends PersistentState {
      * Type descriptor used by the persistent state manager.
      */
     public static final PersistentStateType<WorldScaleSettingsState> TYPE =
-            new PersistentStateType<>("terrain_diffusion_world_settings", WorldScaleSettingsState::createDefault, CODEC, null);
+            new PersistentStateType<>("terrain_diffusion_world_settings", WorldScaleSettingsState::createDefault, CODEC, net.minecraft.datafixer.DataFixTypes.SAVED_DATA_COMMAND_STORAGE);
 
     /**
      * Returns the currently persisted world scale.

@@ -106,7 +106,7 @@ public final class OnnxModel implements AutoCloseable {
             Files.createDirectories(optimizedModelPath.getParent());
             Path temporaryOptimizedModelPath = optimizedModelPath.resolveSibling(optimizedModelPath.getFileName() + ".tmp");
             Files.deleteIfExists(temporaryOptimizedModelPath);
-            OrtSession.SessionOptions optimizationOptions = new OrtSession.SessionOptions();
+            try (OrtSession.SessionOptions optimizationOptions = new OrtSession.SessionOptions()) {
             optimizationOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.EXTENDED_OPT);
             optimizationOptions.setOptimizedModelFilePath(temporaryOptimizedModelPath.toAbsolutePath().toString());
             try (OrtSession ignored = env.createSession(sourceModelBytes, optimizationOptions)) {
@@ -122,6 +122,7 @@ public final class OnnxModel implements AutoCloseable {
             LOG.info("Optimized ONNX model '{}' at runtime ({} KB -> {} KB)",
                     name, sourceModelBytes.length / 1024, optimizedModelBytesFromDisk.length / 1024);
             return new OptimizedModelLoadResult(optimizedModelBytesFromDisk, optimizedModelPath, false);
+            }
         } catch (Exception optimizationException) {
             LOG.warn("Runtime ONNX optimization failed for '{}', using source model bytes: {}",
                     name, optimizationException.getMessage());
@@ -149,17 +150,18 @@ public final class OnnxModel implements AutoCloseable {
      */
     private void initializeModelSession(byte[] modelBytes, long startMillis) throws OrtException {
         if ("cpu".equals(TerrainDiffusionConfig.inferenceDevice())) {
-            OrtSession.SessionOptions sessionOptions = new OrtSession.SessionOptions();
+            try (OrtSession.SessionOptions sessionOptions = new OrtSession.SessionOptions()) {
             sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
             this.cpuSession = env.createSession(modelBytes, sessionOptions);
             this.gpuSession = null;
             setResolvedProviderOnce("CPU");
             LOG.info("ONNX model '{}' loaded on CPU ({} KB) in {} ms",
                     name, modelBytes.length / 1024, System.currentTimeMillis() - startMillis);
+            }
             return;
         }
         if (!TerrainDiffusionConfig.offloadModels()) {
-            OrtSession.SessionOptions sessionOptions = new OrtSession.SessionOptions();
+            try (OrtSession.SessionOptions sessionOptions = new OrtSession.SessionOptions()) {
             sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
             addGpuProvider(sessionOptions);
             if ("CoreML".equals(resolvedInferenceProvider)) {
@@ -171,6 +173,7 @@ public final class OnnxModel implements AutoCloseable {
             this.cpuSession = null;
             LOG.info("ONNX model '{}' loaded on GPU ({} KB) in {} ms",
                     name, modelBytes.length / 1024, System.currentTimeMillis() - startMillis);
+            }
             return;
         }
         this.cpuSession = null;
@@ -250,29 +253,29 @@ public final class OnnxModel implements AutoCloseable {
             return runWithSession(getCpuFallbackSession(), inputs);
         }
         if (gpuSession != null) {
-            try {
-                return runWithSession(gpuSession, inputs);
-            } catch (RuntimeException gpuFailure) {
-                switchToCpuAfterGpuFailure(gpuFailure);
-                return runWithSession(getCpuFallbackSession(), inputs);
-            }
+            return executeWithFallback(()->runWithSession(gpuSession,inputs),this::switchToCpuAfterGpuFailure,
+                    ()->runWithSession(getCpuFallbackSession(),inputs));
         }
         synchronized (GPU_SLOT_LOCK) {
-            claimGpuSlot();
-            try {
-                return runWithSession(activeGpuSession, inputs);
-            } catch (RuntimeException gpuFailure) {
-                switchToCpuAfterGpuFailure(gpuFailure);
-                return runWithSession(getCpuFallbackSession(), inputs);
-            }
+            return executeWithFallback(()->{claimGpuSlot();return runWithSession(activeGpuSession,inputs);},
+                    this::switchToCpuAfterGpuFailure,()->runWithSession(getCpuFallbackSession(),inputs));
+        }
+    }
+
+    static <T> T executeWithFallback(java.util.function.Supplier<T> gpu,
+            java.util.function.Consumer<RuntimeException> releaseGpu,java.util.function.Supplier<T> cpu){
+        try{return gpu.get();}
+        catch(RuntimeException gpuFailure){
+            releaseGpu.accept(gpuFailure);
+            try{return cpu.get();}
+            catch(RuntimeException cpuFailure){if(cpuFailure!=gpuFailure)cpuFailure.addSuppressed(gpuFailure);throw cpuFailure;}
         }
     }
 
     /** Creates a CPU session after a provider-specific runtime failure. This keeps a DirectML build usable on older/smaller GPUs. */
     private synchronized OrtSession getCpuFallbackSession() {
         if (cpuSession != null) return cpuSession;
-        try {
-            OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+        try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
             options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
             cpuSession = env.createSession(optimizedModelBytes, options);
             return cpuSession;
@@ -327,8 +330,7 @@ public final class OnnxModel implements AutoCloseable {
             gpuSlotHolder = null;
         }
 
-        try {
-            OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
+        try (OrtSession.SessionOptions opts = new OrtSession.SessionOptions()) {
             opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
             addGpuProvider(opts);
             activeGpuSession = env.createSession(optimizedModelBytes, opts);
@@ -343,15 +345,13 @@ public final class OnnxModel implements AutoCloseable {
         boolean gpuRequired = "gpu".equals(TerrainDiffusionConfig.inferenceDevice());
         boolean added = false;
 
-        try {
-            OrtCUDAProviderOptions cudaOpts = new OrtCUDAProviderOptions(0);
+        try (OrtCUDAProviderOptions cudaOpts = new OrtCUDAProviderOptions(0)) {
             // Only grow the BFC arena by exactly what is needed, never pre-allocate.
             cudaOpts.add("arena_extend_strategy", "kSameAsRequested");
             // Heuristic: fast startup, no exhaustive benchmarking, workspace-efficient.
             cudaOpts.add("cudnn_conv_algo_search", "HEURISTIC");
             cudaOpts.add("do_copy_in_default_stream", "1");
             opts.addCUDA(cudaOpts);
-            cudaOpts.close();
             added = true;
             setResolvedProviderOnce("CUDA");
         } catch (Throwable t) {
@@ -363,12 +363,14 @@ public final class OnnxModel implements AutoCloseable {
 
         if (!added) {
             try {
+                opts.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL);
+                opts.setMemoryPatternOptimization(false);
                 opts.addDirectML(0);
                 added = true;
                 setResolvedProviderOnce("DirectML");
             } catch (Throwable t) {
                 if (dmlWarnLoggedOnce.compareAndSet(false, true)) {
-                    LOG.warn("DirectML not available: {} - {}. This is expected if you are not using a DirectML build.",
+                    LOG.warn("DirectML initialization failed: {} - {}. The original cause is shown here; CPU recovery will be attempted for inference.",
                             t.getClass().getSimpleName(), t.getMessage());
                 }
             }

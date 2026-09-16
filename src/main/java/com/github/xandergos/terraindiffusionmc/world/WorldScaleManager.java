@@ -6,7 +6,7 @@ import net.minecraft.server.world.ServerWorld;
  * Runtime access for world-scoped terrain scale.
  */
 public final class WorldScaleManager {
-    public static final int DEFAULT_SCALE = 2;
+    public static final int DEFAULT_SCALE = 3;
     private static final int MIN_SCALE = 1;
     public static final int MAX_SCALE = 6;
 
